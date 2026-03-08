@@ -6,7 +6,7 @@
  */
 
 let currentToken = (process.env.GOOGLE_ACCESS_TOKEN ?? "").trim();
-let tokenExpiresAt = Date.now() + 3500_000; // assume ~1hr from startup
+let tokenExpiresAt = 0; // force refresh on first use
 
 const REFRESH_TOKEN = (process.env.GOOGLE_REFRESH_TOKEN ?? "").trim();
 const CLIENT_ID = (process.env.GOOGLE_CLIENT_ID ?? "").trim();
