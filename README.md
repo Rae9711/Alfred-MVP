@@ -1,322 +1,260 @@
-# Clawbot Demo
+# Alfred (阿福) — AI Personal Assistant
 
-**A safe AI agent demo that plans actions but never executes tools autonomously**
-
-This project demonstrates a **controlled AI agent system** where:
-
-* A user types instructions in plain English
-* An AI **proposes a step-by-step plan**
-* A human **reviews and approves** the plan
-* Only **pre-approved tools** are executed
-* All outputs are visible and auditable
-
-This is **not a chatbot** and **not an autonomous agent**.
-It is designed to show **how AI can assist decision-making safely**.
+An AI-powered personal assistant for the China market, built on a human-in-the-loop agent architecture. The user types natural language instructions, the AI generates an executable plan, the user reviews and approves, and the system executes using real integrations.
 
 ---
 
-## What You Will See When It Runs
+## Architecture
 
-* A web page where you:
+```
+User (Web UI) → WebSocket → Server (Express + WS)
+                                ↓
+                         AI Planner (Claude / Qwen)
+                                ↓
+                         Execution Engine
+                                ↓
+                    ┌───────────┼───────────────┐
+                    ↓           ↓               ↓
+              Server Tools   Connector Tools   WeCom Kefu
+              (cloud APIs)   (macOS local)     (WeChat messaging)
+```
 
-  * Choose a personality (tone only)
-  * Type instructions (plain English)
-  * Generate a plan
-  * Approve execution
-* A live execution log
-* A final AI-generated response
-* A JSON file written to a local “outbox” folder (simulating sending to a team)
+- **Server tools** run directly on the backend (web search, email, calendar, LLM generation)
+- **Connector tools** run on the user's Mac via a WebSocket bridge (Apple Contacts, iMessage)
+- **WeCom Kefu** provides official WeChat messaging through Tencent's enterprise API
 
 ---
 
-## What You Need Before Starting
+## Features
 
-### 1. A computer with macOS, Windows, or Linux
+### 16 Integrated Tools
 
-(No programming background required)
+| Tool | Description | Requires |
+|------|-------------|----------|
+| `wechat.send` | Send WeChat messages via WeCom Kefu API | WeCom credentials |
+| `contacts.apple` | Look up contacts from macOS Apple Contacts (iCloud synced) | Connector |
+| `imessage.send` | Send iMessages via macOS | Connector |
+| `sms.send` | Send SMS (stub — ready for Twilio integration) | — |
+| `email.send` | Send email via Gmail API | Google OAuth |
+| `email.read` | Read/search Gmail inbox | Google OAuth |
+| `calendar.manage` | Create/list/update/delete Google Calendar events | Google OAuth |
+| `reminders.manage` | Create/complete/list Apple Reminders via macOS | Connector |
+| `web.search` | Web search via Brave Search API | Brave API key |
+| `flights.search` | Search flights via Kiwi API | Kiwi API key |
+| `text.generate` | Generate text using Claude or Qwen | LLM API key |
+| `image.generate` | Generate images | LLM API key |
+| `pdf.process` | Extract text, summarize, or answer questions about PDFs | LLM API key |
+| `file.save` | Save files to the outbox directory | — |
+| `clarify` | Ask the user for missing information before proceeding | — |
+| `platform.send` | Generic platform message send | — |
 
-### 2. Install **Node.js**
+### AI Planning with Human Approval
 
-Node.js lets the app run locally.
+- Natural language input → structured JSON execution plan
+- Each plan shows the tools, arguments, and data flow between steps
+- User must approve before execution (permission checkboxes for sensitive actions)
+- Supports compound tasks (e.g., "look up Adam's contact and send him a WeChat message about dinner Friday")
 
-👉 Download from:
-[https://nodejs.org](https://nodejs.org)
+### WeChat Integration (WeCom Kefu)
 
-Choose **LTS version**.
+Uses Tencent's official WeCom (企业微信) Customer Service API for WeChat messaging:
 
-After installing, open a terminal and type:
+- **Bidirectional**: send and receive messages with any WeChat user
+- **Official API**: no risk of account bans (unlike iPad/web protocol approaches)
+- **Auto-reply webhook**: incoming WeChat messages trigger the AI agent pipeline — plan, execute, and reply automatically
+- **Welcome messages**: automatic greeting when a new user starts a conversation
+
+### Supabase Auth & Persistence
+
+- Optional authentication via Supabase (email/password login)
+- Sessions, plans, and execution runs persist to Supabase PostgreSQL
+- Write-through cache: in-memory Map for reads, async persist to DB
+- Graceful fallback: works fully in-memory when Supabase is not configured
+
+### Connector System
+
+A WebSocket-based bridge that allows the cloud server to invoke tools on the user's local Mac:
+
+- `contacts.apple` — queries macOS Contacts via JXA (JavaScript for Automation)
+- `imessage.send` — sends iMessages via AppleScript
+- `reminders.manage` — manages Apple Reminders via JXA
+- Auto-reconnect on disconnect
+- Connector ID binding via the web UI
+
+### Agent Avatar (养成系统)
+
+- Animated character with states: idle, thinking, focused, success, error, sleep
+- XP and leveling system based on task completion
+- Cosmetic customization (head, face, back, halo, badge)
+- Streak tracking for daily interaction
+
+---
+
+## Setup
+
+### Prerequisites
+
+- Node.js 18+
+- macOS (for Connector tools — contacts, iMessage, reminders)
+
+### 1. Install dependencies
 
 ```bash
-node -v
+cd clawbot-image-demo/server && npm install
+cd ../web && npm install
 ```
 
-You should see a version number (for example `v18.x.x`).
+### 2. Configure environment variables
 
----
-
-### 3. Install **Ollama** (local AI engine)
-
-👉 Download from:
-[https://ollama.com](https://ollama.com)
-
-After installing, open a terminal and run:
+Copy `.env.example` to `.env` in the server directory and fill in:
 
 ```bash
-ollama serve
+cp clawbot-image-demo/server/.env.example clawbot-image-demo/server/.env
 ```
 
-Leave this running in the background.
+**Required for core functionality:**
+- `LLM_PROVIDER` — `claude` or `ollama`
+- `ANTHROPIC_API_KEY` — Claude API key (if using Claude)
 
----
+**For WeChat (WeCom Kefu):**
+- `WECOM_CORP_ID` — WeCom enterprise ID
+- `WECOM_CORP_SECRET` — App secret with Kefu permissions
+- `WECOM_KF_ID` — Kefu account ID (starts with `wk`)
+- `WECOM_CALLBACK_TOKEN` — Callback verification token
+- `WECOM_CALLBACK_AES_KEY` — 43-char AES key for message decryption
 
-### 4. Download the AI model (one-time step)
+**For email/calendar:**
+- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`
 
-In a new terminal window, run:
+**For web search:**
+- `BRAVE_SEARCH_API_KEY`
 
-```bash
-ollama pull qwen2.5:7b
-```
-
-This downloads the AI model used by the demo.
-It may take several minutes.
-
----
-
-## How to Start the Demo (Step-by-Step)
-
-### Step 1 — Download the project
-
-If using GitHub Desktop:
-
-* Click **Code → Open with GitHub Desktop**
-
-Or download as ZIP:
-
-* Click **Code → Download ZIP**
-* Unzip it on your computer
-
----
-
-### Step 2 — Open a terminal in the project folder
-
-You should see a folder named:
-
-```
-Clawbot-demo
-```
-
-Inside it are two folders:
-
-```
-server
-web
-```
-
----
-
-## Start the Backend (Required)
-
-The backend runs the AI logic.
-
-### 1. Go into the server folder
-
-```bash
-cd Clawbot-demo/server
-```
-
-### 2. Install required files (one-time step)
-
-```bash
-npm install
-```
+**For Supabase auth (optional):**
+- `SUPABASE_URL`, `SUPABASE_KEY`
 
 ### 3. Start the server
 
 ```bash
+cd clawbot-image-demo/server
 npm run dev
 ```
 
-You should see messages like:
-
-```
-Server on http://localhost:8080
-Ollama endpoint: http://127.0.0.1:11434
-```
-
-⚠️ **Leave this terminal window open**
-
----
-
-## Start the Web App (Required)
-
-Open a **new terminal window**.
-
-### 1. Go into the web folder
+### 4. Start the frontend
 
 ```bash
-cd Clawbot-demo/web
-```
-
-### 2. Install required files (one-time step)
-
-```bash
-npm install
-```
-
-### 3. Start the web interface
-
-```bash
+cd clawbot-image-demo/web
 npm run dev
 ```
 
-You will see something like:
-
-```
-Local: http://localhost:5173
-```
-
----
-
-## Open the Demo in Your Browser
-
-Open your browser and go to:
-
-```
-http://localhost:5173
-```
-
-You should now see the Clawbot demo interface.
-
----
-
-## How to Use the Demo (Non-Technical)
-
-### 1. Choose a Personality
-
-This only changes **tone**, not behavior.
-
-Examples:
-
-* Professional
-* Friendly Coach
-* No-BS
-* Playful Nerd
-
----
-
-### 2. Type Instructions
-
-Example:
-
-```
-We want to build a lightweight agent framework where AI proposes plans
-but humans must approve before any tool runs.
-Explain the key components and risks.
-```
-
----
-
-### 3. Click **Generate Plan**
-
-* The AI proposes a step-by-step plan
-* Nothing executes yet
-
----
-
-### 4. Review the Plan
-
-You will see:
-
-* Intent
-* Steps
-* Which tools would be used
-
-This is the **safety checkpoint**.
-
----
-
-### 5. Click **Approve**
-
-* The plan is executed
-* Logs appear in real time
-* A final response is generated
-
----
-
-### 6. View Results
-
-* **Execution Log** shows what happened
-* **Final Response** shows AI output
-* A JSON file is written to:
-
-```
-server/src/outbox/
-```
-
-This simulates “sending to a team”.
-
----
-
-## Important Notes (Please Read)
-
-### This is NOT ChatGPT
-
-* One prompt = one plan = one execution
-* No free-form chatting
-
-### AI cannot run tools by itself
-
-* All tools are defined in code
-* AI can only suggest plans
-* Humans must approve
-
-### Slow responses are normal
-
-* AI runs locally on your machine
-* Some steps may take 30–90 seconds
-
----
-
-## If Something Seems Stuck
-
-### If execution takes a long time
-
-* Wait at least **1–2 minutes**
-* Check the **Execution Log** panel
-
-### If nothing happens at all
-
-* Make sure **both terminals** are running
-* Make sure Ollama is running:
-
-  ```bash
-  ollama serve
-  ```
-
-### Test Ollama manually
+### 5. Start the Connector (for macOS local tools)
 
 ```bash
-curl http://127.0.0.1:11434/api/tags
+cd clawbot-image-demo/server
+CONNECTOR_ID=your-name-mac CONNECTOR_SERVER_WS=ws://127.0.0.1:8081 npx tsx src/connector/index.ts
 ```
 
-You should see `qwen2.5:7b` listed.
+Then in the web UI, enter the same Connector ID and click "绑定".
+
+### 6. Open the app
+
+Navigate to `http://localhost:5173`
 
 ---
 
-## What This Demo Is For
+## WeCom Kefu Setup
 
-* Explaining **safe AI agent design**
-* Showing **human-in-the-loop control**
-* Demonstrating **AI planning without autonomy**
-* Teaching **why guardrails matter**
+To enable real WeChat messaging:
+
+1. Register at [work.weixin.qq.com](https://work.weixin.qq.com)
+2. Create a self-built app (自建应用) with 微信客服 permissions
+3. Create a Kefu account — note the `open_kfid`
+4. Generate a "Contact Me" QR code for WeChat users to scan
+5. Configure the callback URL to `https://your-domain/webhook/wechat`
+6. Fill in the `WECOM_*` env vars in `.env`
+
+WeChat users scan the QR code → start chatting → Albert auto-replies via the AI agent.
+
+---
+
+## Example Prompts
+
+```
+给文件传输助手发微信消息说：你好
+查一下Adam的手机号
+搜索一下最近的AI新闻
+帮我写一段生日祝福发给查理
+查看我的邮件
+下周五晚上8点和Adam吃饭
+提醒我明天给妈妈打电话
+帮我总结这个PDF
+```
 
 ---
 
-## What This Demo Is NOT
+## Project Structure
 
-* Not production software
-* Not autonomous AI
-* Not connected to real messaging systems
-* Not a chatbot
+```
+clawbot-image-demo/
+├── server/
+│   ├── src/
+│   │   ├── index.ts              # Express + WebSocket server, webhook handlers
+│   │   ├── agent/
+│   │   │   ├── plan.ts           # AI planner (prompt engineering, JSON extraction)
+│   │   │   ├── render.ts         # Final response renderer
+│   │   │   ├── executeStore.ts   # Execution run storage
+│   │   │   ├── llm.ts            # LLM provider abstraction (Claude / Ollama)
+│   │   │   └── tools/
+│   │   │       ├── registry.ts   # Tool registration and catalog
+│   │   │       ├── wechat.send.ts    # WeCom Kefu integration
+│   │   │       ├── contacts.apple.ts # macOS Contacts via JXA
+│   │   │       ├── imessage.send.ts  # iMessage via AppleScript
+│   │   │       ├── email.send.ts     # Gmail send
+│   │   │       ├── email.read.ts     # Gmail read
+│   │   │       ├── calendar.ts       # Google Calendar
+│   │   │       ├── reminders.ts      # Apple Reminders
+│   │   │       ├── web.search.ts     # Brave Search
+│   │   │       ├── flights.search.ts # Kiwi Flights
+│   │   │       ├── text.generate.ts  # LLM text generation
+│   │   │       ├── pdf.process.ts    # PDF extraction/summarization
+│   │   │       └── clarify.ts        # Clarification prompt
+│   │   ├── connector/
+│   │   │   └── index.ts          # Connector WebSocket bridge
+│   │   ├── connectorHub.ts       # Server-side connector management
+│   │   ├── sessionStore.ts       # Session management
+│   │   ├── planStore.ts          # Plan storage
+│   │   ├── googleAuth.ts         # Google OAuth token management
+│   │   └── db/
+│   │       ├── supabase.ts       # Supabase client
+│   │       └── schema.sql        # Database schema
+│   └── .env.example
+├── web/
+│   ├── src/
+│   │   ├── App.tsx               # Main app with WebSocket, auth gate
+│   │   ├── components/
+│   │   │   ├── ProposedPlan.tsx   # Plan review UI
+│   │   │   ├── ExecutionLog.tsx   # Live execution viewer
+│   │   │   ├── FinalAnswer.tsx    # Result display
+│   │   │   ├── AgentAvatarCard.tsx # Agent character/avatar
+│   │   │   └── AuthScreen.tsx    # Login/signup screen
+│   │   └── api/
+│   │       ├── ws.ts             # WebSocket client with auto-reconnect
+│   │       └── supabase.ts       # Supabase frontend client
+│   └── .env
+├── docker-compose.yml            # Production deployment config
+└── render.yaml                   # Render.com deployment config
+```
 
 ---
+
+## Deployment
+
+### Docker Compose
+
+```bash
+cd clawbot-image-demo
+docker compose up -d
+```
+
+### Render.com
+
+Push to GitHub and connect the repo in Render. The `render.yaml` defines the service configuration. Add all `WECOM_*`, `ANTHROPIC_API_KEY`, and other secrets as environment variables in the Render dashboard.

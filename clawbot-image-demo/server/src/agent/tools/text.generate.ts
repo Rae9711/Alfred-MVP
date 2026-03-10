@@ -5,7 +5,7 @@
  * This is an explicit, approved tool call — not a hidden LLM detour.
  */
 
-import { textComplete } from "../ollama.js";
+import { textComplete } from "../llm.js";
 import { registerTool, type ToolContext } from "./registry.js";
 
 registerTool({

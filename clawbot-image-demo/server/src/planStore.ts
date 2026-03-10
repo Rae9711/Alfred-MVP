@@ -16,10 +16,27 @@ export type Plan = {
   teamTarget: string;
 };
 
+import { getSupabase } from "./db/supabase.js";
+
 const plans = new Map<string, any>();
 
 export function savePlan(planId: string, plan: any) {
   plans.set(planId, plan);
+
+  // Write-through to Supabase (fire-and-forget)
+  const sb = getSupabase();
+  if (sb) {
+    sb.from("plans")
+      .upsert({
+        plan_id: planId,
+        session_id: plan.sessionId ?? null,
+        user_id: plan.userId ?? null,
+        plan_data: plan,
+      }, { onConflict: "plan_id" })
+      .then(({ error }) => {
+        if (error) console.error("[supabase] savePlan error:", error.message);
+      });
+  }
 }
 
 export function getPlan(planId: string) {

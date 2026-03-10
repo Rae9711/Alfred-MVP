@@ -10,8 +10,24 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=8080
+      - LLM_PROVIDER=${LLM_PROVIDER:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - QWEN_API_KEY=${QWEN_API_KEY:-}
       - OLLAMA_URL=http://ollama:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:1.5b}
+      - GOOGLE_ACCESS_TOKEN=${GOOGLE_ACCESS_TOKEN:-}
+      - BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY:-}
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_KEY=${SUPABASE_KEY:-}
+      - KIWI_API_KEY=${KIWI_API_KEY:-}
+      - WECOM_CORP_ID=${WECOM_CORP_ID:-}
+      - WECOM_CORP_SECRET=${WECOM_CORP_SECRET:-}
+      - WECOM_KF_ID=${WECOM_KF_ID:-}
+      - WECOM_CALLBACK_TOKEN=${WECOM_CALLBACK_TOKEN:-}
+      - WECOM_CALLBACK_AES_KEY=${WECOM_CALLBACK_AES_KEY:-}
+      - GOOGLE_REFRESH_TOKEN=${GOOGLE_REFRESH_TOKEN:-}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
     volumes:
       - ./server/src/outbox:/app/src/outbox
       - backend_data:/app/data

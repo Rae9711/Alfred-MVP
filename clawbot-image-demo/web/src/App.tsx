@@ -4,6 +4,8 @@ import ProposedPlan from "./components/ProposedPlan";
 import ExecutionLog from "./components/ExecutionLog";
 import FinalAnswer from "./components/FinalAnswer";
 import AgentAvatarCard from "./components/AgentAvatarCard";
+import AuthScreen from "./components/AuthScreen";
+import { isAuthEnabled } from "./api/supabase";
 import {
   applyEvent,
   equipCosmetic,
@@ -17,23 +19,20 @@ import {
 } from "./agentMeta";
 
 // Auto-detect WebSocket URL from current hostname if accessed via ngrok
-function getWebSocketURL(): string {
+function getWebSocketURL(token?: string): string {
+  let base: string;
   const envUrl = import.meta.env.VITE_WS_URL;
-  if (envUrl) return envUrl;
-  
-  // If accessed via ngrok (or any HTTPS), use wss:// with same hostname
-  if (window.location.protocol === 'https:') {
+  if (envUrl) {
+    base = envUrl;
+  } else if (window.location.protocol === 'https:') {
     const wsProtocol = 'wss:';
     const hostname = window.location.hostname;
-    // Default to port 8080 for backend, but ngrok will handle routing
-    return `${wsProtocol}//${hostname}`;
+    base = `${wsProtocol}//${hostname}`;
+  } else {
+    base = "ws://localhost:8080";
   }
-  
-  // Local development
-  return "ws://localhost:8080";
+  return token ? `${base}?token=${encodeURIComponent(token)}` : base;
 }
-
-const WS_URL = getWebSocketURL();
 
 // ── AI Identity (persisted in localStorage) ──────────────
 
@@ -80,7 +79,17 @@ const PERSONA_OPTIONS: Record<string, { label: string; desc: string }> = {
   playful_nerd: { label: "极客玩家", desc: "有趣、用比喻，但信息准确" },
 };
 
+// Two-axis persona mapping: tone (casual/formal) x mode (confirm/immediate)
+function resolvePersona(tone: "casual" | "formal", mode: "confirm" | "immediate"): string {
+  if (tone === "casual" && mode === "confirm") return "friendly_coach";
+  if (tone === "casual" && mode === "immediate") return "playful_nerd";
+  if (tone === "formal" && mode === "confirm") return "professional";
+  if (tone === "formal" && mode === "immediate") return "no_bs";
+  return "professional";
+}
+
 const PLATFORMS = [
+  { id: "wechat", label: "微信", target: "#wechat" },
   { id: "imessage", label: "iMessage", target: "#imessage" },
   { id: "sms", label: "手机短信", target: "#sms" },
   { id: "wecom", label: "企业微信", target: "#wecom-team" },
@@ -90,10 +99,60 @@ const PLATFORMS = [
 
 // ── Setup Screen ─────────────────────────────────────────
 
+function ToggleSwitch({ value, onChange, labelA, labelB }: { value: boolean; onChange: (v: boolean) => void; labelA: string; labelB: string }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        background: "#F3F4F6",
+        borderRadius: 24,
+        padding: 3,
+        cursor: "pointer",
+        userSelect: "none",
+      }}
+      onClick={() => onChange(!value)}
+    >
+      <div
+        style={{
+          padding: "6px 16px",
+          borderRadius: 20,
+          fontSize: 13,
+          fontWeight: !value ? 600 : 400,
+          background: !value ? "white" : "transparent",
+          color: !value ? "#4F46E5" : "#6B7280",
+          boxShadow: !value ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+          transition: "all 0.2s",
+        }}
+      >
+        {labelA}
+      </div>
+      <div
+        style={{
+          padding: "6px 16px",
+          borderRadius: 20,
+          fontSize: 13,
+          fontWeight: value ? 600 : 400,
+          background: value ? "white" : "transparent",
+          color: value ? "#4F46E5" : "#6B7280",
+          boxShadow: value ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+          transition: "all 0.2s",
+        }}
+      >
+        {labelB}
+      </div>
+    </div>
+  );
+}
+
 function SetupScreen({ onComplete }: { onComplete: (id: AIIdentity) => void }) {
   const [name, setName] = useState("");
-  const [persona, setPersona] = useState("professional");
-  const [platform, setPlatform] = useState("wecom");
+  const [tone, setTone] = useState<"casual" | "formal">("casual");
+  const [mode, setMode] = useState<"confirm" | "immediate">("confirm");
+  const [platform, setPlatform] = useState("wechat");
+
+  const persona = resolvePersona(tone, mode);
 
   const submit = () => {
     if (!name.trim()) return;
@@ -172,41 +231,34 @@ function SetupScreen({ onComplete }: { onComplete: (id: AIIdentity) => void }) {
           />
         </div>
 
-        {/* Persona */}
+        {/* Two-Axis Personality */}
         <div style={{ marginBottom: 24 }}>
-          <label
-            style={{
-              display: "block",
-              fontWeight: 600,
-              marginBottom: 8,
-              fontSize: 14,
-            }}
-          >
-            选择沟通风格
+          <label style={{ display: "block", fontWeight: 600, marginBottom: 12, fontSize: 14 }}>
+            个性设置
           </label>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-            {Object.entries(PERSONA_OPTIONS).map(([key, { label, desc }]) => (
-              <div
-                key={key}
-                onClick={() => setPersona(key)}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 10,
-                  border:
-                    persona === key
-                      ? "2px solid #4F46E5"
-                      : "1px solid #E5E7EB",
-                  background: persona === key ? "#EEF2FF" : "white",
-                  cursor: "pointer",
-                  transition: "all 0.15s",
-                }}
-              >
-                <div style={{ fontWeight: 600, fontSize: 14 }}>{label}</div>
-                <div style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>
-                  {desc}
-                </div>
-              </div>
-            ))}
+
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 6 }}>语气风格</div>
+            <ToggleSwitch
+              value={tone === "formal"}
+              onChange={(v) => setTone(v ? "formal" : "casual")}
+              labelA="轻松随意"
+              labelB="正式专业"
+            />
+          </div>
+
+          <div>
+            <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 6 }}>执行模式</div>
+            <ToggleSwitch
+              value={mode === "immediate"}
+              onChange={(v) => setMode(v ? "immediate" : "confirm")}
+              labelA="先确认再执行"
+              labelB="立即执行"
+            />
+          </div>
+
+          <div style={{ marginTop: 10, fontSize: 12, color: "#9CA3AF" }}>
+            Style: {PERSONA_OPTIONS[persona]?.label} — {PERSONA_OPTIONS[persona]?.desc}
           </div>
         </div>
 
@@ -272,7 +324,7 @@ function SetupScreen({ onComplete }: { onComplete: (id: AIIdentity) => void }) {
 
 // ── Phase stepper ────────────────────────────────────────
 
-type Phase = "idle" | "planning" | "planned" | "executing" | "done";
+type Phase = "idle" | "planning" | "planned" | "executing" | "done" | "clarifying";
 
 const PHASE_STEPS: { key: Phase; label: string }[] = [
   { key: "idle", label: "输入指令" },
@@ -283,7 +335,9 @@ const PHASE_STEPS: { key: Phase; label: string }[] = [
 ];
 
 function PhaseBar({ phase }: { phase: Phase }) {
-  const currentIdx = PHASE_STEPS.findIndex((s) => s.key === phase);
+  // Map "clarifying" to "planning" index for display purposes
+  const displayPhase = phase === "clarifying" ? "planning" : phase;
+  const currentIdx = PHASE_STEPS.findIndex((s) => s.key === displayPhase);
 
   return (
     <div style={{ display: "flex", gap: 4, marginBottom: 20 }}>
@@ -318,6 +372,24 @@ function PhaseBar({ phase }: { phase: Phase }) {
 
 export default function App() {
   const [identity, setIdentity] = useState<AIIdentity | null>(loadIdentity());
+  const [authSession, setAuthSession] = useState<{ accessToken: string; userId: string } | null>(() => {
+    try {
+      const raw = localStorage.getItem("auth_session");
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  });
+
+  // If Supabase auth is enabled but user isn't logged in, show auth screen
+  if (isAuthEnabled() && !authSession) {
+    return (
+      <AuthScreen
+        onAuth={(session) => {
+          localStorage.setItem("auth_session", JSON.stringify(session));
+          setAuthSession(session);
+        }}
+      />
+    );
+  }
 
   if (!identity) {
     return <SetupScreen onComplete={setIdentity} />;
@@ -326,6 +398,7 @@ export default function App() {
   return (
     <MainScreen
       identity={identity}
+      accessToken={authSession?.accessToken}
       onReset={() => {
         localStorage.removeItem("ai_identity");
         localStorage.removeItem("demo_session");
@@ -333,6 +406,10 @@ export default function App() {
         keys.forEach((k) => localStorage.removeItem(k));
         setIdentity(null);
       }}
+      onLogout={isAuthEnabled() ? () => {
+        localStorage.removeItem("auth_session");
+        setAuthSession(null);
+      } : undefined}
     />
   );
 }
@@ -341,10 +418,14 @@ export default function App() {
 
 function MainScreen({
   identity,
+  accessToken,
   onReset,
+  onLogout,
 }: {
   identity: AIIdentity;
+  accessToken?: string;
   onReset: () => void;
+  onLogout?: () => void;
 }) {
   const sessionId = useMemo(() => getSessionId(), []);
   const metaStorageKey = useMemo(
@@ -367,6 +448,19 @@ function MainScreen({
     return stored || getDefaultConnectorId(identity);
   });
   const [connectorOnline, setConnectorOnline] = useState(false);
+  const [actionMode, setActionMode] = useState<"confirm" | "immediate">(() => {
+    return (localStorage.getItem("action_mode") as any) || "confirm";
+  });
+  const [tone, setTone] = useState<"casual" | "formal">(() => {
+    return (localStorage.getItem("tone_pref") as any) || (
+      identity.persona === "friendly_coach" || identity.persona === "playful_nerd" ? "casual" : "formal"
+    );
+  });
+  const [stepSummary, setStepSummary] = useState<Array<{ tool: string; status: string; description?: string }>>([]);
+  const [completionStatus, setCompletionStatus] = useState<"success" | "partial" | "error" | null>(null);
+  const [uploadedFileId, setUploadedFileId] = useState<string | null>(null);
+  const [clarifyQuestion, setClarifyQuestion] = useState("");
+  const [clarifyAnswer, setClarifyAnswer] = useState("");
   const [manualAddress, setManualAddress] = useState("");
   const [showManualAddressFallback, setShowManualAddressFallback] = useState(false);
   const [manualFallbackReason, setManualFallbackReason] = useState("");
@@ -423,6 +517,10 @@ function MainScreen({
       setAvatarState("thinking");
       return;
     }
+    if (phase === "clarifying") {
+      setAvatarState("focused");
+      return;
+    }
     if (phase === "done") {
       setAvatarState("success");
       const timer = setTimeout(() => setAvatarState("idle"), 1500);
@@ -437,7 +535,8 @@ function MainScreen({
 
   // ── WebSocket setup ──────────────────────────────────
   useEffect(() => {
-    const client = createWS(WS_URL, (m: EventMsg) => {
+    const wsUrl = getWebSocketURL(accessToken);
+    const client = createWS(wsUrl, (m: EventMsg) => {
       if (m.type === "event") {
         const ev = m.event ?? "";
         const data = m.data;
@@ -447,6 +546,12 @@ function MainScreen({
         if (ev === "agent.plan.proposed") {
           setPlan(data);
           setPhase("planned");
+        }
+
+        if (ev === "agent.clarify") {
+          setClarifyQuestion(data?.question ?? "请提供更多细节");
+          setClarifyAnswer("");
+          setPhase("clarifying");
         }
 
         if (ev === "agent.plan.error") {
@@ -484,9 +589,36 @@ function MainScreen({
 
         if (ev === "agent.exec.started") setPhase("executing");
 
+        if (ev === "tool.success") {
+          setStepSummary((prev) => [...prev, {
+            tool: data?.tool ?? "unknown",
+            status: "ok",
+            description: data?.description,
+          }]);
+        }
+
+        if (ev === "tool.error") {
+          setStepSummary((prev) => [...prev, {
+            tool: data?.tool ?? "unknown",
+            status: "error",
+            description: data?.error,
+          }]);
+        }
+
+        if (ev === "agent.exec.finished") {
+          const steps = data?.steps ?? [];
+          const hasErrors = steps.some((s: any) => s.status === "error");
+          const allErrors = steps.length > 0 && steps.every((s: any) => s.status === "error");
+          setCompletionStatus(allErrors ? "error" : hasErrors ? "partial" : "success");
+        }
+
         if (ev === "agent.rendered") {
           setFinalMsg(data.message);
           setPhase("done");
+          // Browser notification
+          if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+            new Notification("Alfred 阿福", { body: "任务已完成！" });
+          }
           const thisRunId = data?.runId as string | undefined;
           if (thisRunId) {
             let shouldReward = false;
@@ -541,6 +673,10 @@ function MainScreen({
   // ── Actions ──────────────────────────────────────────
   const startPlanning = (nextPrompt: string) => {
     if (!wsClient || !nextPrompt.trim()) return;
+    // If a PDF was uploaded, append file reference to the prompt
+    if (uploadedFileId) {
+      nextPrompt = `${nextPrompt}\n\n[Attached file: ${uploadedFileId}]`;
+    }
     setLogs([]);
     setFinalMsg("");
     setRunId(null);
@@ -549,6 +685,8 @@ function MainScreen({
     setApprovedPermissions(new Set());
     setShowManualAddressFallback(false);
     setManualFallbackReason("");
+    setStepSummary([]);
+    setCompletionStatus(null);
     setPhase("planning");
     setLastGainXp(0);
 
@@ -597,6 +735,49 @@ function MainScreen({
   const rewrite = (p: string) => {
     if (!wsClient || !runId) return;
     wsClient.call("agent.render", { sessionId, runId, persona: p });
+  };
+
+  const toggleActionMode = () => {
+    const next = actionMode === "confirm" ? "immediate" : "confirm";
+    setActionMode(next);
+    localStorage.setItem("action_mode", next);
+    if (wsClient) {
+      wsClient.call("session.setActionMode", { sessionId, mode: next });
+      // Also update persona based on new mode + current tone
+      const newPersona = resolvePersona(tone, next);
+      wsClient.call("session.setPersona", { sessionId, persona: newPersona });
+    }
+  };
+
+  const toggleTone = () => {
+    const next = tone === "casual" ? "formal" : "casual";
+    setTone(next);
+    localStorage.setItem("tone_pref", next);
+    if (wsClient) {
+      const newPersona = resolvePersona(next, actionMode);
+      wsClient.call("session.setPersona", { sessionId, persona: newPersona });
+    }
+  };
+
+  // Request notification permission on mount
+  React.useEffect(() => {
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+  }, []);
+
+  // Sync action mode on WS connect
+  useEffect(() => {
+    if (!wsClient) return;
+    wsClient.call("session.setActionMode", { sessionId, mode: actionMode });
+  }, [wsClient, sessionId, actionMode]);
+
+  const submitClarification = () => {
+    if (!wsClient || !clarifyAnswer.trim()) return;
+    setPhase("planning");
+    wsClient.call("agent.clarify.response", { sessionId, answer: clarifyAnswer.trim() });
+    setClarifyQuestion("");
+    setClarifyAnswer("");
   };
 
   // ── Derived ──────────────────────────────────────────
@@ -674,7 +855,43 @@ function MainScreen({
                 display: "inline-block",
               }}
             />
-            {connected ? "本地运行中" : "未连接"}
+            {connected ? "已连接" : "未连接"}
+          </div>
+
+          {/* Tone toggle */}
+          <div
+            onClick={toggleTone}
+            style={{
+              padding: "4px 10px",
+              borderRadius: 20,
+              background: tone === "formal" ? "#EEF2FF" : "#F0FDF4",
+              fontSize: 12,
+              color: tone === "formal" ? "#4338CA" : "#166534",
+              cursor: "pointer",
+              userSelect: "none",
+              fontWeight: 500,
+            }}
+            title="Toggle tone"
+          >
+            {tone === "casual" ? "轻松" : "正式"}
+          </div>
+
+          {/* Action mode toggle */}
+          <div
+            onClick={toggleActionMode}
+            style={{
+              padding: "4px 10px",
+              borderRadius: 20,
+              background: actionMode === "immediate" ? "#FEF3C7" : "#F3F4F6",
+              fontSize: 12,
+              color: actionMode === "immediate" ? "#92400E" : "#6B7280",
+              cursor: "pointer",
+              userSelect: "none",
+              fontWeight: 500,
+            }}
+            title="Toggle action mode"
+          >
+            {actionMode === "confirm" ? "确认模式" : "立即执行"}
           </div>
 
           {/* Model badge */}
@@ -687,7 +904,7 @@ function MainScreen({
               color: "#6B7280",
             }}
           >
-            Ollama · qwen2.5
+            Alfred 阿福
           </div>
 
           <button
@@ -704,6 +921,23 @@ function MainScreen({
           >
             重新设置
           </button>
+
+          {onLogout && (
+            <button
+              onClick={onLogout}
+              style={{
+                padding: "4px 10px",
+                borderRadius: 6,
+                border: "1px solid #FCA5A5",
+                background: "#FEF2F2",
+                fontSize: 12,
+                color: "#DC2626",
+                cursor: "pointer",
+              }}
+            >
+              登出
+            </button>
+          )}
         </div>
       </header>
 
@@ -745,7 +979,7 @@ function MainScreen({
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
                 rows={5}
-                placeholder="例如：帮我写一封活动邀请函并发送给团队…"
+                placeholder="例如：帮我给Adam发消息约周五晚上8点吃饭…"
                 style={{
                   width: "100%",
                   padding: "10px 12px",
@@ -761,6 +995,51 @@ function MainScreen({
                 }}
               />
 
+              {/* PDF Upload */}
+              <div style={{ marginTop: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <label
+                    style={{
+                      padding: "6px 12px",
+                      borderRadius: 8,
+                      border: "1px solid #E5E7EB",
+                      background: "white",
+                      fontSize: 12,
+                      cursor: "pointer",
+                      color: "#6B7280",
+                    }}
+                  >
+                    上传 PDF
+                    <input
+                      type="file"
+                      accept=".pdf"
+                      style={{ display: "none" }}
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        const fd = new FormData();
+                        fd.append("file", file);
+                        try {
+                          const apiBase = import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:8080`;
+                          const res = await fetch(`${apiBase}/upload`, { method: "POST", body: fd });
+                          const json = await res.json();
+                          if (json.fileId) {
+                            setUploadedFileId(json.fileId);
+                          }
+                        } catch (err) {
+                          console.error("Upload failed:", err);
+                        }
+                      }}
+                    />
+                  </label>
+                  {uploadedFileId && (
+                    <span style={{ fontSize: 12, color: "#059669" }}>
+                      已上传: {uploadedFileId}
+                    </span>
+                  )}
+                </div>
+              </div>
+
               <div style={{ marginTop: 10 }}>
                 <label
                   style={{
@@ -771,7 +1050,7 @@ function MainScreen({
                     color: "#6B7280",
                   }}
                 >
-                  本机 Connector ID（用于调用你自己的 Mac 账号）
+                  本机 Connector ID（用于调用本地工具）
                 </label>
                 <div style={{ display: "flex", gap: 8 }}>
                   <input
@@ -819,7 +1098,7 @@ function MainScreen({
                 >
                   {connectorOnline
                     ? `Connector 已在线：${connectorId}`
-                    : "Connector 未连接（Apple 通讯录/iMessage 将使用本机或报错）"}
+                    : "Connector 未连接（通讯录/iMessage/微信需要本机 Connector）"}
                 </div>
               </div>
 
@@ -879,6 +1158,71 @@ function MainScreen({
                 )}
               </div>
 
+              {/* Clarification dialog */}
+              {phase === "clarifying" && clarifyQuestion && (
+                <div
+                  style={{
+                    marginTop: 12,
+                    background: "#EEF2FF",
+                    borderRadius: 8,
+                    padding: 12,
+                    border: "1px solid #C7D2FE",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: "#4338CA",
+                      marginBottom: 8,
+                    }}
+                  >
+                    {identity.name} 需要确认
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 13,
+                      color: "#1E1B4B",
+                      marginBottom: 10,
+                    }}
+                  >
+                    {clarifyQuestion}
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input
+                      value={clarifyAnswer}
+                      onChange={(e) => setClarifyAnswer(e.target.value)}
+                      placeholder="输入你的回答…"
+                      style={{
+                        flex: 1,
+                        padding: "8px 10px",
+                        borderRadius: 8,
+                        border: "1px solid #C7D2FE",
+                        fontSize: 13,
+                        outline: "none",
+                      }}
+                      onKeyDown={(e) => e.key === "Enter" && submitClarification()}
+                    />
+                    <button
+                      onClick={submitClarification}
+                      disabled={!clarifyAnswer.trim()}
+                      style={{
+                        padding: "8px 14px",
+                        borderRadius: 8,
+                        border: "none",
+                        background: clarifyAnswer.trim() ? "#4F46E5" : "#D1D5DB",
+                        color: "white",
+                        fontSize: 13,
+                        fontWeight: 600,
+                        cursor: clarifyAnswer.trim() ? "pointer" : "not-allowed",
+                      }}
+                    >
+                      确认
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {showManualAddressFallback && (
                 <div
                   style={{
@@ -896,7 +1240,7 @@ function MainScreen({
                       marginBottom: 6,
                     }}
                   >
-                    联系人读取失败，请先在本机授权；也可手动输入地址继续
+                    联系人查找失败，请手动输入地址继续
                   </div>
                   <div
                     style={{
@@ -913,7 +1257,7 @@ function MainScreen({
                     <input
                       value={manualAddress}
                       onChange={(e) => setManualAddress(e.target.value)}
-                      placeholder="输入 iMessage 地址（手机号或邮箱）"
+                      placeholder="输入地址（手机号或邮箱）"
                       style={{
                         flex: 1,
                         padding: "8px 10px",
@@ -966,7 +1310,7 @@ function MainScreen({
               onShareResult={() => applyProgressEvent("shared_result")}
             />
             <ExecutionLog logs={logs} />
-            <FinalAnswer message={finalMsg} />
+            <FinalAnswer message={finalMsg} status={completionStatus} stepSummary={stepSummary} />
 
             {/* Persona rewrite buttons — only after done */}
             {phase === "done" && (

@@ -95,7 +95,7 @@
 
 import { nanoid } from "nanoid";
 import { savePlan } from "../planStore.js";
-import { textComplete } from "./ollama.js";
+import { textComplete } from "./llm.js";
 import { jsonrepair } from "jsonrepair";
 import { getTool, getToolCatalog, getToolIds } from "./tools/registry.js";
 
@@ -253,9 +253,13 @@ function validatePlanDraft(draft: any): {
 
 const TOOL_SAVE_AS: Record<string, string> = {
   "contacts.apple": "contact",
-  "contacts.lookup": "contact",
   "text.generate": "msg",
   "image.generate": "image",
+  "web.search": "search",
+  "email.read": "emails",
+  "pdf.process": "pdf",
+  "calendar.manage": "calendar",
+  "reminders.manage": "reminder",
 };
 
 function inferSaveAs(toolId: string): string | undefined {
@@ -368,31 +372,50 @@ export async function createPlan(args: {
   const toolCatalog = getToolCatalog(platform);
 
   // Pick platform-specific send example (2 steps: lookup + send with DIRECT message)
-  const sendTool = platform === "imessage" ? "imessage.send" : platform === "sms" ? "sms.send" : "platform.send";
-  const contactTool = platform === "imessage" ? "contacts.apple" : "contacts.lookup";
+  const sendTool = platform === "imessage" ? "imessage.send" : platform === "sms" ? "sms.send" : platform === "wechat" ? "wechat.send" : "platform.send";
+  // Always use contacts.apple — iPhone contacts sync to Mac via iCloud
+  const contactTool = "contacts.apple";
+  const contactArgs = `"query":"PERSON_NAME"`;
   const sendArgs = platform === "imessage"
     ? `"handle":"{{vars.contact.handle}}","recipientName":"{{vars.contact.name}}","message":"THE_MESSAGE"`
+    : platform === "wechat"
+    ? `"recipient":"{{vars.contact.name}}","message":"THE_MESSAGE"`
     : platform === "sms"
     ? `"recipientPhone":"{{vars.contact.phone}}","recipientName":"{{vars.contact.name}}","message":"THE_MESSAGE"`
     : `"recipientId":"{{vars.contact.id}}","recipientName":"{{vars.contact.name}}","platform":"${platform}","message":"THE_MESSAGE"`;
-  const contactArgs = platform === "imessage"
-    ? `"query":"PERSON_NAME"`
-    : `"query":"PERSON_NAME","platform":"${platform}"`;
+
+  const now = new Date();
+  const currentDateStr = now.toISOString().split("T")[0];
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const currentDay = dayNames[now.getDay()];
 
   const plannerInstruction = `
 Return ONLY valid JSON. No markdown.
 
-Produce a multi-step plan. Steps share data via "saveAs"/"{{vars.x.field}}".
+You are Alfred (阿福), an AI personal assistant. Current date: ${currentDateStr} (${currentDay}). Produce a multi-step plan. Steps share data via "saveAs"/"{{vars.x.field}}".
 
 Tools:
 ${toolCatalog}
 
-IMPORTANT rules:
+CRITICAL RULES:
 1. If the user gives a DIRECT message to send (e.g. "说明天吃什么"), put that text directly in the send tool's "message" arg. Do NOT use text.generate.
 2. Only use text.generate when the user asks to COMPOSE/WRITE something (e.g. "写一封邀请函", "帮我想一段祝福语").
-3. If the user already provides a direct address (phone/email), send directly without contact lookup.
-4. If no direct address is provided, FIRST look up the contact, THEN send.
+3. If the user already provides a direct address (phone/email/wxid) or a WeChat system name (文件传输助手/filehelper), send directly without contact lookup.
+4. If no direct address is provided, FIRST look up the contact, THEN send. For WeChat, the recipient can be a name — wechat.send will resolve it.
 5. Each step needs: id, tool, description (Chinese), args. saveAs must be a plain name like "contact".
+6. For email operations: use email.send to send, email.read to search/read inbox.
+7. For calendar: use calendar.manage with action "create"/"list"/"update"/"delete". Use symbolic dates like "TODAY", "TOMORROW", "TODAY_15:00", "TOMORROW_20:00", or ISO dates like "${currentDateStr}T15:00:00Z".
+8. For reminders/tasks: use reminders.manage with action "create"/"complete"/"list"/"delete". Use "TODAY", "TOMORROW", or ISO date for due_date.
+9. For web searches (including flight queries): use web.search. After searching, add a text.generate step to format results if user wants a summary.
+10. For PDF documents: use pdf.process with action "extract_text"/"summarize"/"answer_question". If the user message contains "[Attached file: FILENAME]", use that FILENAME as the file_id in pdf.process args.
+11. For compound requests (e.g. "schedule dinner and send him a message"), create multiple steps in one plan.
+
+CLARIFICATION RULES:
+- If the request is MISSING the recipient (who to send to), you MUST clarify.
+- If the request is MISSING critical info but has enough context, make reasonable assumptions and proceed. Do NOT over-clarify.
+- If the request is truly ambiguous or vague (e.g. "帮我安排一下", "plan something"), use clarify to ask ALL missing info in ONE question.
+- Batch all questions into ONE clarify step. Ask multiple things at once, e.g. "请问：1) 发给谁？2) 什么时间？3) 有没有地点偏好？"
+- Do NOT clarify if: user gives specific recipient + message content, or the task is self-contained (search, list calendar, read emails).
 
 Example A — direct message "给查理说明天开会":
 {"intent":"给查理发消息","steps":[{"id":"s1","tool":"${contactTool}","description":"查找查理","args":{${contactArgs.replace("PERSON_NAME", "查理")}},"saveAs":"contact"},{"id":"s2","tool":"${sendTool}","description":"发送消息","args":{${sendArgs.replace("THE_MESSAGE", "明天开会")}},"dependsOn":["s1"]}]}
@@ -400,12 +423,32 @@ Example A — direct message "给查理说明天开会":
 Example B — compose + send "帮我写个生日祝福发给查理":
 {"intent":"写生日祝福发给查理","steps":[{"id":"s1","tool":"text.generate","description":"生成祝福","args":{"prompt":"写一段简短的生日祝福语"},"saveAs":"msg"},{"id":"s2","tool":"${contactTool}","description":"查找查理","args":{${contactArgs.replace("PERSON_NAME", "查理")}},"saveAs":"contact"},{"id":"s3","tool":"${sendTool}","description":"发送消息","args":{${sendArgs.replace("THE_MESSAGE", "{{vars.msg.text}}")}},"dependsOn":["s1","s2"]}]}
 
-Example C — direct address "给 ruiraywang97@gmail.com 发消息测试":
-${platform === "imessage"
-  ? '{"intent":"给指定地址发送消息","steps":[{"id":"s1","tool":"imessage.send","description":"直接发送 iMessage","args":{"handle":"ruiraywang97@gmail.com","recipientName":"ruiraywang97@gmail.com","message":"测试"}}]}'
-  : platform === "sms"
-  ? '{"intent":"给指定号码发送短信","steps":[{"id":"s1","tool":"sms.send","description":"直接发送短信","args":{"recipientPhone":"13800001111","recipientName":"13800001111","message":"测试"}}]}'
-  : '{"intent":"发送平台消息","steps":[{"id":"s1","tool":"platform.send","description":"发送平台消息","args":{"recipientId":"USER_ID","recipientName":"同事","platform":"wecom","message":"测试"}}]}'}
+Example C — direct address "给 ruiraywang97@gmail.com 发邮件说hello":
+{"intent":"发送邮件","steps":[{"id":"s1","tool":"email.send","description":"发送邮件","args":{"to":"ruiraywang97@gmail.com","subject":"Hello","body":"Hello"}}]}
+
+Example D — vague request needing clarification "帮我发个消息给朋友约晚饭":
+{"intent":"需要澄清","steps":[{"id":"s1","tool":"clarify","description":"询问详情","args":{"question":"好的！我需要确认几个细节：\n1. 发给哪位朋友？\n2. 哪天的晚饭？\n3. 有没有时间和地点偏好？"}}]}
+
+Example E — search "搜索一下最近的AI新闻":
+{"intent":"搜索AI新闻","steps":[{"id":"s1","tool":"web.search","description":"搜索AI新闻","args":{"query":"latest AI news 2026"},"saveAs":"search"},{"id":"s2","tool":"text.generate","description":"整理搜索结果","args":{"prompt":"请根据以下搜索结果，用中文整理出一份简洁的新闻摘要：\n\n{{vars.search.results}}"},"dependsOn":["s1"]}]}
+
+Example F — calendar "下周五晚上8点和Adam吃饭":
+{"intent":"创建日历事件并发消息","steps":[{"id":"s1","tool":"calendar.manage","description":"创建晚餐日历事件","args":{"action":"create","title":"和Adam吃晚饭","start":"2026-03-13T20:00:00Z","end":"2026-03-13T21:30:00Z"},"saveAs":"calendar"},{"id":"s2","tool":"${contactTool}","description":"查找Adam","args":{${contactArgs.replace("PERSON_NAME", "Adam")}},"saveAs":"contact"},{"id":"s3","tool":"${sendTool}","description":"发送消息给Adam","args":{${sendArgs.replace("THE_MESSAGE", "Hey! 下周五晚上8点一起吃晚饭怎么样？")}},"dependsOn":["s1","s2"]}]}
+
+Example G — reminder "提醒我明天给妈妈打电话":
+{"intent":"创建提醒","steps":[{"id":"s1","tool":"reminders.manage","description":"创建提醒任务","args":{"action":"create","title":"给妈妈打电话","due_date":"TOMORROW"},"saveAs":"reminder"}]}
+
+Example H — email "查看我的邮件":
+{"intent":"查看邮件","steps":[{"id":"s1","tool":"email.read","description":"读取最新邮件","args":{"count":5},"saveAs":"emails"}]}
+
+Example I — clear request, NO clarification needed "Text Adam to plan dinner Friday 8pm at Five Guys":
+{"intent":"给Adam发消息约饭","steps":[{"id":"s1","tool":"${contactTool}","description":"查找Adam","args":{${contactArgs.replace("PERSON_NAME", "Adam")}},"saveAs":"contact"},{"id":"s2","tool":"${sendTool}","description":"发送晚餐邀请","args":{${sendArgs.replace("THE_MESSAGE", "Hey Adam, want to grab dinner at Five Guys this Friday at 8pm?")}},"dependsOn":["s1"]}]}
+
+Example J — WeChat direct send "给文件传输助手发微信说测试":
+{"intent":"发微信消息","steps":[{"id":"s1","tool":"wechat.send","description":"发送微信消息","args":{"recipient":"filehelper","message":"测试"}}]}
+
+Example K — PDF "帮我总结这个PDF":
+{"intent":"总结PDF","steps":[{"id":"s1","tool":"pdf.process","description":"总结PDF内容","args":{"file_id":"uploaded_file.pdf","action":"summarize"},"saveAs":"pdf"}]}
 
 User: ${prompt}
 `.trim();

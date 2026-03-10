@@ -8,7 +8,7 @@
 
 import fs from "fs";
 import path from "path";
-import { textComplete } from "../ollama.js";
+import { textComplete } from "../llm.js";
 import { registerTool, type ToolContext } from "./registry.js";
 
 registerTool({

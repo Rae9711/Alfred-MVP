@@ -33,12 +33,31 @@ export type RunRecord = {
   toolResults: Record<string, any>;
 };
 
+import { getSupabase } from "../db/supabase.js";
+
 // ── in-memory store ──────────────────────────────────────
 
 const runs = new Map<string, RunRecord>();
 
 export function saveRun(r: RunRecord) {
   runs.set(r.runId, r);
+
+  // Write-through to Supabase (fire-and-forget)
+  const sb = getSupabase();
+  if (sb) {
+    sb.from("runs")
+      .upsert({
+        run_id: r.runId,
+        plan_id: r.planId,
+        user_id: (r as any).userId ?? null,
+        prompt: r.prompt,
+        execution_summary: r.executionSummary,
+        tool_results: r.toolResults,
+      }, { onConflict: "run_id" })
+      .then(({ error }) => {
+        if (error) console.error("[supabase] saveRun error:", error.message);
+      });
+  }
 }
 
 export function getRun(runId: string): RunRecord {

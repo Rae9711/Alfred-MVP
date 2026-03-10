@@ -59,9 +59,14 @@
 export type ToolPermission =
   | "contacts.read"
   | "platform.send"
-  | "files.write";
+  | "files.write"
+  | "email.send"
+  | "email.read"
+  | "calendar.write"
+  | "reminders.write"
+  | "files.read";
 
-export type ToolCategory = "content" | "platform" | "data" | "file";
+export type ToolCategory = "content" | "platform" | "data" | "file" | "productivity" | "communication" | "system";
 
 export type ToolContext = {
   outboxDir: string;
@@ -115,22 +120,27 @@ export function getToolIds(): string[] {
 export function getToolCatalog(platform?: string): string {
   const lines: string[] = [];
 
-  // Determine which tools to show based on platform
+  // Determine which messaging tools to show based on platform.
+  // contacts.apple is always shown (iPhone contacts sync to Mac via iCloud).
+  // Universal tools (search, email, calendar, pdf, clarify) are always shown.
   const skipIds = new Set<string>();
   if (platform === "imessage") {
-    // Don't show mock contacts, sms, platform tools
-    skipIds.add("contacts.lookup");
     skipIds.add("sms.send");
     skipIds.add("platform.send");
+    skipIds.add("wechat.send");
   } else if (platform === "sms") {
-    skipIds.add("contacts.apple");
     skipIds.add("imessage.send");
+    skipIds.add("platform.send");
+    skipIds.add("wechat.send");
+  } else if (platform === "wechat") {
+    skipIds.add("imessage.send");
+    skipIds.add("sms.send");
     skipIds.add("platform.send");
   } else {
     // wecom / dingtalk / feishu
-    skipIds.add("contacts.apple");
     skipIds.add("imessage.send");
     skipIds.add("sms.send");
+    skipIds.add("wechat.send");
   }
 
   for (const tool of TOOLS.values()) {
@@ -147,6 +157,11 @@ const PERMISSION_LABELS: Record<ToolPermission, string> = {
   "contacts.read": "读取本机联系人（需用户授权）",
   "platform.send": "使用你的账号发送消息（需用户授权）",
   "files.write": "写入文件",
+  "email.send": "通过你的 Outlook 账户发送邮件",
+  "email.read": "读取你的 Outlook 邮件",
+  "calendar.write": "管理你的日历事件",
+  "reminders.write": "管理你的待办事项",
+  "files.read": "读取已上传的文件",
 };
 
 export function getPermissionLabel(perm: ToolPermission): string {

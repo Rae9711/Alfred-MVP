@@ -53,7 +53,7 @@ const STYLE_CARDS: Record<Persona, StyleCard> = {
       "结尾给一个鼓励或问题。",
     toneDirective:
       "支持感强、务实、好理解。" +
-      "可使用“你”，避免术语堆砌。",
+      '可使用"你"，避免术语堆砌。',
     example: `你开了一个很好的头！
 
 我已经帮你完成这两步：
@@ -107,7 +107,7 @@ export function getStyleCard(persona: Persona): StyleCard {
 export function buildStylerPrompt(persona: Persona, neutralContent: string): string {
   const card = getStyleCard(persona);
 
-  return `你是一个“风格改写器”。你的唯一任务是：在不改变事实的前提下，把内容改写成指定语气。
+  return `你是一个"风格改写器"。你的唯一任务是：在不改变事实的前提下，把内容改写成指定语气。
 
 RULES:
 - 绝对不能新增任何事实。

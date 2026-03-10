@@ -11,10 +11,42 @@ services:
         value: production
       - key: PORT
         value: "8080"
+      - key: LLM_PROVIDER
+        sync: false  # "claude" | "qwen" | "ollama"
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: QWEN_API_KEY
+        sync: false
       - key: OLLAMA_URL
         sync: false  # Set this to your Ollama API URL
       - key: OLLAMA_MODEL
         value: qwen2.5:1.5b
+      - key: GOOGLE_ACCESS_TOKEN
+        sync: false
+      - key: BRAVE_SEARCH_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: KIWI_API_KEY
+        sync: false
+      - key: WECOM_CORP_ID
+        sync: false
+      - key: WECOM_CORP_SECRET
+        sync: false
+      - key: WECOM_KF_ID
+        sync: false
+      - key: WECOM_CALLBACK_TOKEN
+        sync: false
+      - key: WECOM_CALLBACK_AES_KEY
+        sync: false
+      - key: GOOGLE_REFRESH_TOKEN
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
     disk:
       name: clawbot-data
       mountPath: /app/data
@@ -29,6 +61,10 @@ services:
     envVars:
       - key: VITE_WS_URL
         sync: false  # Set this to wss://clawbot-backend.onrender.com
+      - key: VITE_SUPABASE_URL
+        sync: false
+      - key: VITE_SUPABASE_ANON_KEY
+        sync: false
     routes:
       - type: rewrite
         source: /*

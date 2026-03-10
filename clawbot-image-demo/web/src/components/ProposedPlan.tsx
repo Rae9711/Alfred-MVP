@@ -3,22 +3,35 @@ import React from "react";
 // ── permission labels ────────────────────────────────────
 
 const PERMISSION_LABELS: Record<string, string> = {
-  "contacts.read": "读取本机联系人（需用户授权）",
-  "platform.send": "使用你的账号发送消息（需用户授权）",
+  "contacts.read": "读取本机联系人",
+  "platform.send": "使用你的账号发送消息",
   "files.write": "写入文件",
+  "email.send": "通过 Gmail 发送邮件",
+  "email.read": "读取 Gmail 邮件",
+  "calendar.write": "管理日历事件",
+  "reminders.write": "管理待办事项",
+  "files.read": "读取已上传的文件",
 };
 
 // ── tool display names & icons ───────────────────────────
 
 const TOOL_INFO: Record<string, { icon: string; label: string }> = {
-  "text.generate": { icon: "✍", label: "文本生成" },
-  "image.generate": { icon: "🎨", label: "图片生成" },
-  "contacts.lookup": { icon: "👤", label: "联系人查找" },
-  "contacts.apple": { icon: "📇", label: "Apple 通讯录" },
-  "platform.send": { icon: "📤", label: "平台消息" },
-  "sms.send": { icon: "📱", label: "发送短信" },
-  "imessage.send": { icon: "💬", label: "发送 iMessage" },
-  "file.save": { icon: "💾", label: "保存文件" },
+  "text.generate": { icon: "\u270D", label: "文本生成" },
+  "image.generate": { icon: "\uD83C\uDFA8", label: "图片生成" },
+  "contacts.apple": { icon: "\uD83D\uDCC7", label: "通讯录" },
+  "platform.send": { icon: "\uD83D\uDCE4", label: "平台消息" },
+  "sms.send": { icon: "\uD83D\uDCF1", label: "发送短信" },
+  "imessage.send": { icon: "\uD83D\uDCAC", label: "发送 iMessage" },
+  "wechat.send": { icon: "\uD83D\uDCAC", label: "发送微信" },
+  "email.send": { icon: "\u2709\uFE0F", label: "发送邮件" },
+  "email.read": { icon: "\uD83D\uDCE5", label: "读取邮件" },
+  "calendar.manage": { icon: "\uD83D\uDCC5", label: "日历管理" },
+  "reminders.manage": { icon: "\u2705", label: "待办管理" },
+  "web.search": { icon: "\uD83D\uDD0D", label: "网络搜索" },
+  "pdf.process": { icon: "\uD83D\uDCC4", label: "PDF 处理" },
+  "clarify": { icon: "\u2753", label: "询问用户" },
+  "file.save": { icon: "\uD83D\uDCBE", label: "保存文件" },
+  "flights.search": { icon: "\u2708\uFE0F", label: "航班搜索" },
 };
 
 // ── component ────────────────────────────────────────────

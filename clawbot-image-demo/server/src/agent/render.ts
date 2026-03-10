@@ -13,7 +13,7 @@
 
 import type { Persona } from "../sessionStore.js";
 import { getRun, type RunRecord } from "./executeStore.js";
-import { textComplete } from "./ollama.js";
+import { textComplete } from "./llm.js";
 import { buildStylerPrompt } from "./persona.js";
 
 // ── Reporter prompt ──────────────────────────────────────
@@ -28,7 +28,10 @@ function buildReporterPrompt(run: RunRecord): string {
     ...(s.error ? { error: s.error } : {}),
   }));
 
-  return `你是事实汇报助手。请基于执行结果，向用户生成清晰、简洁的中文总结。
+  // Always respond in Chinese (primary market is China)
+  const langRule = "必须使用中文输出（必要的专有名词可保留英文）。";
+
+  return `You are a factual reporting assistant. Generate a clear, concise summary based on the execution results.
 
 USER'S ORIGINAL REQUEST:
 ${run.prompt}
@@ -41,12 +44,12 @@ Overall status: ${run.executionSummary.status}
 RULES:
 - Report ONLY what actually happened based on the execution results above.
 - If a step failed or timed out, say so explicitly. Do not paper over failures.
-- If information is missing from the execution log, say "I don't have that data from the execution log." Do NOT guess.
+- If information is missing from the execution log, say "I don't have that data." Do NOT guess.
 - Be concise. State facts. No personality or style — that comes later.
 - Do NOT invent tool outputs or results that aren't in the execution log above.
-- 必须使用中文输出（必要的专有名词可保留英文）。
+- ${langRule}
 
-请输出面向用户的简洁事实总结。`;
+Output a concise factual summary for the user.`;
 }
 
 // ── public API ───────────────────────────────────────────

@@ -7,10 +7,4 @@ export default defineConfig({
   server: {
     port: 5173,
   },
-  // 生产环境构建时注入环境变量
-  define: {
-    "import.meta.env.VITE_WS_URL": JSON.stringify(
-      process.env.VITE_WS_URL || "ws://localhost:8080"
-    ),
-  },
 });
