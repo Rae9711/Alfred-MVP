@@ -4,6 +4,7 @@ import WebSocket from "ws";
 import { nanoid } from "nanoid";
 import { getTool } from "../agent/tools/registry.js";
 import "../agent/tools/index.js";
+import { isBrowserTool, executeBrowserTool } from "./browserTools/index.js";
 
 const SERVER_WS_URL = process.env.CONNECTOR_SERVER_WS ?? "ws://127.0.0.1:8080";
 const CONNECTOR_ID = (process.env.CONNECTOR_ID ?? "").trim();
@@ -77,6 +78,37 @@ function connect() {
       return;
     }
 
+    // Handle browser tools via Playwright
+    if (isBrowserTool(toolId)) {
+      console.log(`[connector] received ${toolId} request`, {
+        requestId,
+        origin: args?.origin,
+        destination: args?.destination,
+        date: args?.date,
+      });
+      console.log(`[connector] Executing browser tool: ${toolId}`);
+      try {
+        const result = await executeBrowserTool(toolId, args);
+        if (toolId === "browser.search_flights") {
+          const count = Array.isArray(result?.flights) ? result.flights.length : 0;
+          console.log(`[connector] browser.search_flights returned ${count} flights`);
+        }
+        call(ws, "connector.result", {
+          requestId,
+          ok: true,
+          result,
+        });
+      } catch (e: any) {
+        call(ws, "connector.result", {
+          requestId,
+          ok: false,
+          error: e?.message || String(e),
+        });
+      }
+      return;
+    }
+
+    // Handle other tools via registry
     const tool = getTool(toolId);
     if (!tool) {
       call(ws, "connector.result", {
@@ -87,7 +119,9 @@ function connect() {
       return;
     }
 
-    if (toolId !== "contacts.apple" && toolId !== "imessage.send") {
+    // Whitelist check for non-browser tools
+    const ALLOWED_REGISTRY_TOOLS = new Set(["contacts.apple", "imessage.send"]);
+    if (!ALLOWED_REGISTRY_TOOLS.has(toolId)) {
       call(ws, "connector.result", {
         requestId,
         ok: false,

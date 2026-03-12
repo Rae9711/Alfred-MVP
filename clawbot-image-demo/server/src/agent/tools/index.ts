@@ -22,6 +22,14 @@ import "./calendar.js";
 import "./reminders.js";
 import "./pdf.process.js";
 import "./flights.search.js";
+import "./browser.search_flights.js";
+import "./browser.open_page.js";
+import "./browser.search_web.js";
+import "./browser.extract_page.js";
+import "./browser.click_link_by_text.js";
+import "./browser.fill_input.js";
+import "./browser.compose_gmail_draft.js";
+import "./browser.submit_chatgpt_prompt.js";
 
 import { getAllTools } from "./registry.js";
 

@@ -201,7 +201,7 @@ function resolveVars(value: any, vars: Record<string, any>): any {
  * - contacts.apple: macOS JXA 调用（需要系统权限，可能较慢）
  * - imessage.send: macOS AppleScript 调用（需要系统权限，可能较慢）
  */
-const SLOW_TOOLS = new Set(["text.generate", "image.generate", "contacts.apple", "imessage.send", "web.search"]);
+const SLOW_TOOLS = new Set(["text.generate", "image.generate", "contacts.apple", "imessage.send", "web.search", "browser.search_flights", "browser.open_page", "browser.search_web", "browser.extract_page", "browser.click_link_by_text", "browser.fill_input", "browser.compose_gmail_draft", "browser.submit_chatgpt_prompt"]);
 
 /** 慢速工具超时时间：5 分钟 */
 const SLOW_TIMEOUT = 300_000;

@@ -98,6 +98,14 @@ const PLATFORMS = [
   { id: "feishu", label: "飞书", target: "#feishu-group" },
 ];
 
+// ── Suggested Actions ────────────────────────────────
+
+type SuggestedAction = {
+  tool: string;
+  label: string;
+  args: Record<string, any>;
+};
+
 // ── Conversation History Types ───────────────────────────
 
 type ConversationMessage = {
@@ -498,6 +506,7 @@ function MainScreen({
   });
   const [stepSummary, setStepSummary] = useState<Array<{ tool: string; status: string; description?: string }>>([]);
   const [completionStatus, setCompletionStatus] = useState<"success" | "partial" | "error" | null>(null);
+  const [suggestedActions, setSuggestedActions] = useState<SuggestedAction[]>([]);
   const uploadedFileStorageKey = useMemo(() => `uploaded_file_${sessionId}`, [sessionId]);
   const [uploadedFileId, setUploadedFileId] = useState<string | null>(null);
   const [clarifyQuestion, setClarifyQuestion] = useState("");
@@ -608,6 +617,10 @@ function MainScreen({
 
         if (ev === "gateway.ready") setConnected(true);
 
+        if (ev === "connector.status") {
+          setConnectorOnline(!!data?.connected);
+        }
+
         if (ev === "agent.plan.proposed") {
           setPlan(data);
           setPhase("planned");
@@ -636,6 +649,12 @@ function MainScreen({
         if (ev === "tool.success") {
           applyProgressEvent("tool_used");
           setAvatarState("focused");
+          // Capture any suggestedActions the tool returned
+          const actions = data?.result?.suggestedActions;
+          if (Array.isArray(actions) && actions.length > 0) {
+            console.log("[app] suggestedActions received:", actions);
+            setSuggestedActions(actions);
+          }
         }
 
         if (ev === "tool.error") {
@@ -894,6 +913,7 @@ function MainScreen({
     setApprovedPermissions(new Set());
     setShowManualAddressFallback(false);
     setManualFallbackReason("");
+    setSuggestedActions([]);
     setStepSummary([]);
     setCompletionStatus(null);
     setPhase("planning");
@@ -1593,6 +1613,75 @@ function MainScreen({
             />
             <ExecutionLog logs={logs} />
             <FinalAnswer message={finalMsg} status={completionStatus} stepSummary={stepSummary} />
+
+            {/* Suggested action buttons — rendered after tool results come in */}
+            {suggestedActions.length > 0 && (
+              <div
+                style={{
+                  marginTop: 12,
+                  background: "white",
+                  borderRadius: 12,
+                  border: "1px solid #C7D2FE",
+                  padding: 16,
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 600,
+                    marginBottom: 10,
+                    color: "#4338CA",
+                  }}
+                >
+                  下一步可以：
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {suggestedActions.map((action, i) => (
+                    <button
+                      key={i}
+                      onClick={() => {
+                        if (!wsClient) return;
+                        console.log("[app] action button clicked:", action.label, action.tool, action.args);
+                        setSuggestedActions([]);
+                        setLogs([]);
+                        setFinalMsg("");
+                        setStepSummary([]);
+                        setCompletionStatus(null);
+                        setPhase("executing");
+                        console.log("[app] triggering tool via agent.run_action:", action.tool);
+                        wsClient.call("agent.run_action", {
+                          sessionId,
+                          tool: action.tool,
+                          args: action.args,
+                          label: action.label,
+                        });
+                      }}
+                      style={{
+                        padding: "8px 18px",
+                        borderRadius: 20,
+                        border: "1px solid #818CF8",
+                        background: "#EEF2FF",
+                        color: "#4338CA",
+                        fontSize: 13,
+                        fontWeight: 600,
+                        cursor: "pointer",
+                        transition: "all 0.15s",
+                      }}
+                      onMouseOver={(e) => {
+                        (e.currentTarget as HTMLButtonElement).style.background = "#4338CA";
+                        (e.currentTarget as HTMLButtonElement).style.color = "white";
+                      }}
+                      onMouseOut={(e) => {
+                        (e.currentTarget as HTMLButtonElement).style.background = "#EEF2FF";
+                        (e.currentTarget as HTMLButtonElement).style.color = "#4338CA";
+                      }}
+                    >
+                      {action.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Persona rewrite buttons — only after done */}
             {phase === "done" && (

@@ -64,7 +64,8 @@ export type ToolPermission =
   | "email.read"
   | "calendar.write"
   | "reminders.write"
-  | "files.read";
+  | "files.read"
+  | "browser.control";
 
 export type ToolCategory = "content" | "platform" | "data" | "file" | "productivity" | "communication" | "system";
 
@@ -162,6 +163,7 @@ const PERMISSION_LABELS: Record<ToolPermission, string> = {
   "calendar.write": "管理你的日历事件",
   "reminders.write": "管理你的待办事项",
   "files.read": "读取已上传的文件",
+  "browser.control": "控制浏览器（打开网页、搜索）",
 };
 
 export function getPermissionLabel(perm: ToolPermission): string {

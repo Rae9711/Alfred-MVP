@@ -100,9 +100,11 @@ import { getSupabase } from "./db/supabase.js";
 import { createPlan } from "./agent/plan.js";
 import { executePlan } from "./agent/execute.js";
 import { renderFinal } from "./agent/render.js";
+import { savePlan } from "./planStore.js";
 import { updateSettings, getSettings, chatCompletion } from "./agent/llm.js";
 import {
   getConnectedConnectorIds,
+  getConnectorIdBySocket,
   hasConnector,
   invokeConnectorTool,
   registerConnector,
@@ -536,6 +538,7 @@ type WSMsg =
   | { id: string; method: "agent.plan"; params: { sessionId: string; intent: string; prompt?: string; teamTarget?: string; platform?: string } }
   | { id: string; method: "agent.execute"; params: { sessionId: string; planId: string; approved: boolean } }
   | { id: string; method: "agent.render"; params: { sessionId: string; runId: string; persona: string } }
+  | { id: string; method: "agent.run_action"; params: { sessionId: string; tool: string; args?: Record<string, any>; label?: string } }
   | { id: string; method: "agent.clarify.response"; params: { sessionId: string; answer: string } }
   | { id: string; method: "connector.register"; params: { connectorId: string; token?: string } }
   | { id: string; method: "connector.result"; params: { requestId: string; ok: boolean; result?: any; error?: string } };
@@ -546,8 +549,12 @@ function sendJSON(ws: any, obj: any) {
 
 const wss = new WebSocketServer({ server });
 
+// Track web-client WebSocket connections by sessionId so we can push connector status events.
+const sessionWebSockets = new Map<string, any>();
+
 // wechat.send now calls WeChatPadPro directly — no connector needed
-const CONNECTOR_TOOLS = new Set(["contacts.apple", "imessage.send"]);
+// browser.* tools use Playwright on the connector
+const CONNECTOR_TOOLS = new Set(["contacts.apple", "imessage.send", "browser.search_flights", "browser.open_page", "browser.search_web", "browser.extract_page", "browser.click_link_by_text", "browser.fill_input", "browser.compose_gmail_draft", "browser.submit_chatgpt_prompt"]);
 const CONNECTOR_TOKEN = process.env.CONNECTOR_TOKEN?.trim();
 const REQUIRE_CONNECTOR_FOR_APPLE = process.env.REQUIRE_CONNECTOR_FOR_APPLE !== "false";
 
@@ -611,13 +618,16 @@ wss.on("connection", async (ws, req) => {
         if (!connectorId) throw new Error("connectorId is required");
 
         bindConnector(sessionId, connectorId);
+        // Track this web-client socket so we can push status events later
+        sessionWebSockets.set(sessionId, ws);
+        const connected = hasConnector(connectorId);
         sendJSON(ws, {
           id: msg.id,
           ok: true,
           result: {
             sessionId,
             connectorId,
-            connected: hasConnector(connectorId),
+            connected,
           },
         });
         return;
@@ -643,6 +653,19 @@ wss.on("connection", async (ws, req) => {
             connectedConnectors: getConnectedConnectorIds(),
           },
         });
+
+        // Push connector.status to all web sessions bound to this connector
+        for (const [sessionId, clientWs] of sessionWebSockets.entries()) {
+          if (getConnectorId(sessionId) === connectorId) {
+            try {
+              sendJSON(clientWs, {
+                type: "event",
+                event: "connector.status",
+                data: { connectorId, connected: true },
+              });
+            } catch { /* socket may be closed */ }
+          }
+        }
         return;
       }
 
@@ -668,6 +691,13 @@ wss.on("connection", async (ws, req) => {
             }),
           { timeoutMs: 600_000, label: "createPlan" },
         );
+
+        if (plan.steps.some((s: any) => s.tool === "browser.search_flights")) {
+          console.log("[agent.plan] planner selected browser.search_flights", {
+            requiredPermissions: plan.requiredPermissions,
+            sessionId: msg.params.sessionId,
+          });
+        }
 
         // Check if the plan contains a clarify step — if so, emit clarification event
         const clarifyStep = plan.steps.find((s: any) => s.tool === "clarify");
@@ -713,7 +743,53 @@ wss.on("connection", async (ws, req) => {
                 return { error: `未连接本地 Connector（${connId}）。` };
               }
               try {
-                return await invokeConnectorTool({ connectorId: connId, tool: step.tool, args, timeoutMs: timeoutMs + 15_000 });
+                if (step.tool === "browser.search_flights") {
+                  console.log("[execute] connector received browser.search_flights dispatch", {
+                    connectorId: connId,
+                    sessionId,
+                  });
+                }
+                if (step.tool === "browser.open_page") {
+                  console.log("[execute] connector executing browser.open_page", {
+                    connectorId: connId,
+                    url: args?.url,
+                  });
+                }
+                if (step.tool === "browser.search_web") {
+                  console.log("[execute] connector executing browser.search_web", {
+                    connectorId: connId,
+                    query: args?.query,
+                  });
+                }
+                if (step.tool === "browser.extract_page") {
+                  console.log("[execute] connector executing browser.extract_page", {
+                    connectorId: connId,
+                    mode: args?.mode ?? "current_page",
+                  });
+                }
+                if (step.tool === "browser.click_link_by_text") {
+                  console.log("[execute] connector executing browser.click_link_by_text", {
+                    connectorId: connId,
+                    ordinal: args?.ordinal ?? 1,
+                  });
+                }
+                const connectorResult = await invokeConnectorTool({ connectorId: connId, tool: step.tool, args, timeoutMs: timeoutMs + 15_000 });
+                if (step.tool === "browser.search_flights") {
+                  const count = Array.isArray(connectorResult?.flights) ? connectorResult.flights.length : 0;
+                  console.log(`[execute] browser.search_flights returned ${count} flights`);
+                }
+                if (step.tool === "browser.open_page") {
+                  console.log(`[execute] browser.open_page returned title="${connectorResult?.title}" finalUrl="${connectorResult?.finalUrl}"`);
+                }
+                if (step.tool === "browser.search_web") {
+                  const count = Array.isArray(connectorResult?.results) ? connectorResult.results.length : 0;
+                  console.log(`[execute] browser.search_web returned ${count} results for query="${connectorResult?.query}"`);
+                }
+                if (step.tool === "browser.extract_page") {
+                  const len = typeof connectorResult?.content === "string" ? connectorResult.content.length : 0;
+                  console.log(`[execute] browser.extract_page: url="${connectorResult?.url}" title="${connectorResult?.title}" contentLen=${len} truncated=${connectorResult?.truncated}`);
+                }
+                return connectorResult;
               } catch (e: any) {
                 return { error: `本地 Connector 执行失败: ${e?.message || String(e)}` };
               }
@@ -780,12 +856,58 @@ wss.on("connection", async (ws, req) => {
             }
 
             try {
-              return await invokeConnectorTool({
+              if (step.tool === "browser.search_flights") {
+                console.log("[execute] connector received browser.search_flights dispatch", {
+                  connectorId,
+                  sessionId,
+                });
+              }
+              if (step.tool === "browser.open_page") {
+                console.log("[execute] connector executing browser.open_page", {
+                  connectorId,
+                  url: args?.url,
+                });
+              }
+              if (step.tool === "browser.search_web") {
+                console.log("[execute] connector executing browser.search_web", {
+                  connectorId,
+                  query: args?.query,
+                });
+              }
+              if (step.tool === "browser.extract_page") {
+                console.log("[execute] connector executing browser.extract_page", {
+                  connectorId,
+                  mode: args?.mode ?? "current_page",
+                });
+              }
+              if (step.tool === "browser.click_link_by_text") {
+                console.log("[execute] connector executing browser.click_link_by_text", {
+                  connectorId,
+                  ordinal: args?.ordinal ?? 1,
+                });
+              }
+              const connectorResult = await invokeConnectorTool({
                 connectorId,
                 tool: step.tool,
                 args,
                 timeoutMs: timeoutMs + 15_000,
               });
+              if (step.tool === "browser.search_flights") {
+                const count = Array.isArray(connectorResult?.flights) ? connectorResult.flights.length : 0;
+                console.log(`[execute] browser.search_flights returned ${count} flights`);
+              }
+              if (step.tool === "browser.open_page") {
+                console.log(`[execute] browser.open_page returned title="${connectorResult?.title}" finalUrl="${connectorResult?.finalUrl}"`);
+              }
+              if (step.tool === "browser.search_web") {
+                const count = Array.isArray(connectorResult?.results) ? connectorResult.results.length : 0;
+                console.log(`[execute] browser.search_web returned ${count} results for query="${connectorResult?.query}"`);
+              }
+              if (step.tool === "browser.extract_page") {
+                const len = typeof connectorResult?.content === "string" ? connectorResult.content.length : 0;
+                console.log(`[execute] browser.extract_page: url="${connectorResult?.url}" title="${connectorResult?.title}" contentLen=${len} truncated=${connectorResult?.truncated}`);
+              }
+              return connectorResult;
             } catch (e: any) {
               return {
                 error: `本地 Connector 执行失败: ${e?.message || String(e)}`,
@@ -852,6 +974,88 @@ wss.on("connection", async (ws, req) => {
         return;
       }
 
+      // ── Direct tool action (suggested action button click) ──
+      if (msg.method === "agent.run_action") {
+        const { sessionId, tool, args, label } = msg.params;
+        const session = getSession(sessionId);
+
+        console.log(`[agent.run_action] tool=${tool} label="${label}" args=${JSON.stringify(args).slice(0, 200)}`);
+
+        const emit = (event: string, data: any) => {
+          sendJSON(ws, { type: "event", event, data });
+        };
+
+        // Create a minimal single-step plan and store it
+        const planId = `action-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        savePlan(planId, {
+          planId,
+          sessionId,
+          prompt: label ?? `Run ${tool}`,
+          steps: [
+            {
+              id: "s1",
+              tool,
+              args: args ?? {},
+              description: label ?? `Execute ${tool}`,
+            },
+          ],
+          requiredPermissions: [],
+        });
+
+        const connectorId = getConnectorId(sessionId);
+
+        const run = await executePlan({
+          sessionId,
+          planId,
+          approved: true,
+          emit,
+          outboxDir,
+          executeTool: async ({ step, args: resolvedArgs, timeoutMs, localExecute }) => {
+            if (!CONNECTOR_TOOLS.has(step.tool)) return localExecute();
+            if (!connectorId) {
+              if (!REQUIRE_CONNECTOR_FOR_APPLE) return localExecute();
+              return { error: "当前会话未绑定本机 Connector。" };
+            }
+            if (!hasConnector(connectorId)) {
+              return { error: `未连接本地 Connector（${connectorId}）。` };
+            }
+            try {
+              console.log(`[agent.run_action] dispatching ${step.tool} via connector ${connectorId}`);
+              const result = await invokeConnectorTool({
+                connectorId,
+                tool: step.tool,
+                args: resolvedArgs,
+                timeoutMs: timeoutMs + 15_000,
+              });
+              console.log(`[agent.run_action] ${step.tool} returned: ${JSON.stringify(result).slice(0, 200)}`);
+              return result;
+            } catch (e: any) {
+              return { error: `本地 Connector 执行失败: ${e?.message || String(e)}` };
+            }
+          },
+        });
+
+        try {
+          const rendered = await renderFinal({ runId: run.runId, persona: session.persona });
+          console.log(`[agent.run_action] rendered for tool=${tool}`);
+          sendJSON(ws, { type: "event", event: "agent.rendered", data: rendered });
+        } catch (renderErr: any) {
+          console.error("[agent.run_action] render error:", renderErr?.message ?? renderErr);
+          sendJSON(ws, {
+            type: "event",
+            event: "agent.rendered",
+            data: {
+              runId: run.runId,
+              persona: session.persona,
+              message: `执行已完成（${run.executionSummary.status}），但生成回复时出错。`,
+            },
+          });
+        }
+
+        sendJSON(ws, { id: msg.id, ok: true, result: { runId: run.runId } });
+        return;
+      }
+
       // ── Re-render with a different persona ───────────
       if (msg.method === "agent.render") {
         const session = getSession(msg.params.sessionId);
@@ -881,7 +1085,32 @@ wss.on("connection", async (ws, req) => {
   sendJSON(ws, { type: "event", event: "gateway.ready", data: { ok: true } });
 
   ws.on("close", () => {
+    // Detect if this was a connector socket (before unregistering)
+    const disconnectedConnectorId = getConnectorIdBySocket(ws as any);
     unregisterConnectorBySocket(ws as any);
+
+    if (disconnectedConnectorId) {
+      // Push offline status to all web sessions bound to this connector
+      for (const [sessionId, clientWs] of sessionWebSockets.entries()) {
+        if (getConnectorId(sessionId) === disconnectedConnectorId) {
+          try {
+            sendJSON(clientWs, {
+              type: "event",
+              event: "connector.status",
+              data: { connectorId: disconnectedConnectorId, connected: false },
+            });
+          } catch { /* ignore */ }
+        }
+      }
+    }
+
+    // Clean up if this was a web-client socket
+    for (const [sid, clientWs] of sessionWebSockets.entries()) {
+      if (clientWs === ws) {
+        sessionWebSockets.delete(sid);
+        break;
+      }
+    }
   });
 });
 

@@ -11,6 +11,7 @@ const PERMISSION_LABELS: Record<string, string> = {
   "calendar.write": "管理日历事件",
   "reminders.write": "管理待办事项",
   "files.read": "读取已上传的文件",
+  "browser.control": "控制浏览器（打开网页、搜索）",
 };
 
 // ── tool display names & icons ───────────────────────────
@@ -32,6 +33,7 @@ const TOOL_INFO: Record<string, { icon: string; label: string }> = {
   "clarify": { icon: "\u2753", label: "询问用户" },
   "file.save": { icon: "\uD83D\uDCBE", label: "保存文件" },
   "flights.search": { icon: "\u2708\uFE0F", label: "航班搜索" },
+  "browser.search_flights": { icon: "\u2708\uFE0F\uD83D\uDCBB", label: "浏览器搜索航班" },
 };
 
 // ── component ────────────────────────────────────────────

@@ -266,6 +266,142 @@ function inferSaveAs(toolId: string): string | undefined {
   return TOOL_SAVE_AS[toolId];
 }
 
+function extractCurrentRequest(prompt: string): string {
+  const marker = "[当前请求]";
+  const idx = prompt.lastIndexOf(marker);
+  if (idx < 0) return prompt.trim();
+  return prompt.slice(idx + marker.length).trim();
+}
+
+function isFlightRequest(prompt: string): boolean {
+  const t = extractCurrentRequest(prompt);
+  return /(search\s+flights?|\bflight\b|\bflights\b|google\s*flights|航班|机票|from\s+.+\s+to\s+.+)/i.test(t);
+}
+
+function isOpenPageRequest(prompt: string): boolean {
+  const t = extractCurrentRequest(prompt);
+  return /\bopen\s+(gmail|chatgpt|openai|amazon|https?:\/\/\S+)\b/i.test(t) ||
+    /\b(navigate|go)\s+to\s+(gmail|chatgpt|openai|amazon|https?:\/\/\S+)\b/i.test(t) ||
+    /(打开|访问)\s*(gmail|chatgpt|openai|amazon)/i.test(t);
+}
+
+const OPEN_PAGE_SITE_MAP: Record<string, string> = {
+  gmail: "https://mail.google.com",
+  chatgpt: "https://chatgpt.com",
+  openai: "https://openai.com",
+  amazon: "https://www.amazon.com",
+};
+
+function inferOpenPageStepFromPrompt(prompt: string): PlanStep | null {
+  const t = extractCurrentRequest(prompt).replace(/\s+/g, " ").trim();
+
+  // Match "open <site>" or "navigate to <site>" patterns
+  const m = t.match(/(?:open|navigate\s+to|go\s+to|打开|访问)\s+([a-zA-Z0-9._\-/: ]+)/i);
+  if (m) {
+    const raw = m[1].trim().toLowerCase().replace(/\s+/g, "");
+    const url = OPEN_PAGE_SITE_MAP[raw] ?? (raw.startsWith("http") ? raw : `https://${raw}`);
+    return {
+      id: "s1",
+      tool: "browser.open_page",
+      description: "打开网页",
+      args: { url },
+      saveAs: "page",
+    };
+  }
+  return null;
+}
+
+function isSearchWebRequest(prompt: string): boolean {
+  const t = extractCurrentRequest(prompt);
+  // Match web-search intent but exclude flight-search phrases handled by browser.search_flights
+  const isFlightSearchMatch = /(search\s+flights?|\bflight\b|\bflights\b|google\s*flights|航班|机票)/i.test(t);
+  if (isFlightSearchMatch) return false;
+  return /\bsearch\b|\blook\s+up\b|\bfind\b|\bwhat\s+is\b|\bwho\s+is\b|\bwhat\s+are\b|\bweather\b|\bnews\b|\blatest\b|\bprice\s+of\b/i.test(t) ||
+    /\b搜索\b|\b查找\b|\b查询\b|\b查一下\b|\b天气\b|\b新闻\b|\b最新\b/i.test(t);
+}
+
+function inferSearchWebStepFromPrompt(prompt: string): PlanStep | null {
+  const t = extractCurrentRequest(prompt).replace(/\s+/g, " ").trim();
+
+  // Extract the query: strip leading verb like "Search", "Look up", "Find", "搜索"
+  const cleaned = t
+    .replace(/^(search\s+(for\s+)?|look\s+up\s+|find\s+|搜索一下\s*|搜索\s*|查找\s*|查询\s*|查一下\s*)/i, "")
+    .trim();
+
+  const query = cleaned || t;
+
+  return {
+    id: "s1",
+    tool: "browser.search_web",
+    description: "搜索网页",
+    args: { query },
+    saveAs: "search",
+  };
+}
+
+function isExtractPageRequest(prompt: string): boolean {
+  const t = extractCurrentRequest(prompt);
+  return /\b(summarize|summary|extract|read)\s+(this\s+)?(page|article|content|text|current\s+page)\b/i.test(t) ||
+    /\bwhat\s+(does\s+this\s+page|is\s+on\s+this\s+page)\b/i.test(t) ||
+    /\b(总结|提取|阅读|读取)\s*(这个|当前|此)?\s*(页面|网页|文章|内容)\b/i.test(t) ||
+    /\b(这个?|当前)\s*页面\s*(说了什么|讲了什么|内容是什么)\b/i.test(t);
+}
+
+function inferExtractPageStep(): PlanStep {
+  return {
+    id: "s1",
+    tool: "browser.extract_page",
+    description: "提取当前页面内容",
+    args: { mode: "current_page" },
+    saveAs: "page",
+  };
+}
+
+function normalizeNaturalDate(raw: string | undefined, currentDate: Date): string | undefined {
+  if (!raw) return undefined;
+  const token = raw.trim().replace(/[.。！？!?,，]$/g, "");
+  if (!token) return undefined;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(token)) return token;
+
+  const withYear = new Date(`${token} ${currentDate.getFullYear()}`);
+  if (!Number.isNaN(withYear.getTime())) {
+    return withYear.toISOString().slice(0, 10);
+  }
+
+  const direct = new Date(token);
+  if (!Number.isNaN(direct.getTime())) {
+    return direct.toISOString().slice(0, 10);
+  }
+
+  return undefined;
+}
+
+function inferFlightStepFromPrompt(prompt: string, currentDate: Date): PlanStep | null {
+  const t = extractCurrentRequest(prompt).replace(/\s+/g, " ").trim();
+
+  const en = t.match(/from\s+([A-Za-z .'-]+?)\s+to\s+([A-Za-z .'-]+?)(?:\s+(?:for|on)\s+([A-Za-z0-9,\- ]+))?(?:$|[.?!])/i);
+  if (en) {
+    const origin = en[1].trim();
+    const destination = en[2].trim();
+    const date = normalizeNaturalDate(en[3], currentDate);
+    if (origin && destination) {
+      return {
+        id: "s1",
+        tool: "browser.search_flights",
+        description: "在Google Flights搜索航班",
+        args: {
+          origin,
+          destination,
+          ...(date ? { date } : {}),
+        },
+        saveAs: "flights",
+      };
+    }
+  }
+
+  return null;
+}
+
 // ── normalize LLM output into plan shape ─────────────────
 
 /**
@@ -371,6 +507,11 @@ export async function createPlan(args: {
   // Build tool catalog — only show tools relevant to this platform
   const toolCatalog = getToolCatalog(platform);
 
+  // DEBUG: Log tool catalog to verify browser.search_flights is present
+  console.log("[createPlan] TOOL CATALOG FOR PLANNER:");
+  console.log(toolCatalog);
+  console.log("[createPlan] --- END TOOL CATALOG ---");
+
   // Pick platform-specific send example (2 steps: lookup + send with DIRECT message)
   const sendTool = platform === "imessage" ? "imessage.send" : platform === "sms" ? "sms.send" : platform === "wechat" ? "wechat.send" : "platform.send";
   // Always use contacts.apple — iPhone contacts sync to Mac via iCloud
@@ -406,9 +547,13 @@ CRITICAL RULES:
 6. For email operations: use email.send to send, email.read to search/read inbox.
 7. For calendar: use calendar.manage with action "create"/"list"/"update"/"delete". Use symbolic dates like "TODAY", "TOMORROW", "TODAY_15:00", "TOMORROW_20:00", or ISO dates like "${currentDateStr}T15:00:00Z".
 8. For reminders/tasks: use reminders.manage with action "create"/"complete"/"list"/"delete". Use "TODAY", "TOMORROW", or ISO date for due_date.
-9. For web searches (including flight queries): use web.search. After searching, add a text.generate step to format results if user wants a summary.
+9. For web searches (NOT including flights): use web.search. After searching, add a text.generate step to format results if user wants a summary.
 10. For PDF documents: use pdf.process with action "extract_text"/"summarize"/"answer_question". If the user message contains "[Attached file: FILENAME]", use that FILENAME as the file_id in pdf.process args.
 11. For compound requests (e.g. "schedule dinner and send him a message"), create multiple steps in one plan.
+12. For FLIGHT SEARCHES (e.g. "搜航班", "search flights", "New York to Detroit", "机票"): ALWAYS use browser.search_flights. This tool opens a real browser on the user's machine to search Google Flights and returns live results. Do NOT use web.search or flights.search for flight queries.
+13. For OPEN PAGE requests (e.g. "Open Gmail", "Open ChatGPT", "Open Amazon", "Open OpenAI", "打开谷歌", "go to openai.com"): ALWAYS use browser.open_page. Use built-in mappings: gmail→https://mail.google.com, chatgpt→https://chatgpt.com, openai→https://openai.com, amazon→https://www.amazon.com. If the user provides a full URL, use it directly.
+14. For WEB SEARCH requests (e.g. "Search Ann Arbor weather", "Search best coffee shops", "Look up OpenAI blog", "查找最新消息", "搜索天气"): ALWAYS use browser.search_web. Use the user's query as the "query" arg. Strip leading verbs like "Search", "Look up", "搜索" from the query. Do NOT use web.search for these — browser.search_web opens a real browser.
+15. For PAGE EXTRACT / SUMMARIZE requests (e.g. "summarize this page", "summarize the current page", "what does this page say", "extract page content", "总结这个页面", "这页说了什么"): ALWAYS use browser.extract_page with args {"mode":"current_page"}. This reads whatever page is currently open in the browser — no URL needed.
 
 CLARIFICATION RULES:
 - If the request is MISSING the recipient (who to send to), you MUST clarify.
@@ -450,6 +595,18 @@ Example J — WeChat direct send "给文件传输助手发微信说测试":
 Example K — PDF "帮我总结这个PDF":
 {"intent":"总结PDF","steps":[{"id":"s1","tool":"pdf.process","description":"总结PDF内容","args":{"file_id":"uploaded_file.pdf","action":"summarize"},"saveAs":"pdf"}]}
 
+Example L — flight search "搜索纽约到底特律3月20日的航班":
+{"intent":"搜索航班","steps":[{"id":"s1","tool":"browser.search_flights","description":"在Google Flights搜索航班","args":{"origin":"New York","destination":"Detroit","date":"2026-03-20"},"saveAs":"flights"}]}
+
+Example M — open page "Open Gmail":
+{"intent":"打开Gmail","steps":[{"id":"s1","tool":"browser.open_page","description":"打开Gmail网页","args":{"url":"https://mail.google.com"},"saveAs":"page"}]}
+
+Example N — web search "Search Ann Arbor weather":
+{"intent":"搜索天气","steps":[{"id":"s1","tool":"browser.search_web","description":"搜索Ann Arbor天气","args":{"query":"Ann Arbor weather"},"saveAs":"search"}]}
+
+Example O — page summarize "Summarize the current page":
+{"intent":"总结页面","steps":[{"id":"s1","tool":"browser.extract_page","description":"提取当前页面内容","args":{"mode":"current_page"},"saveAs":"page"}]}
+
 User: ${prompt}
 `.trim();
 
@@ -457,6 +614,59 @@ User: ${prompt}
 
   const draft = await planWithRepair(plannerInstruction);
   let { intent, steps, requiredPermissions } = validatePlanDraft(draft);
+
+  // Deterministic safeguard: flight requests should always use browser.search_flights.
+  if (isFlightRequest(prompt)) {
+    const hasBrowserFlights = steps.some((s) => s.tool === "browser.search_flights");
+    if (!hasBrowserFlights) {
+      const inferredStep = inferFlightStepFromPrompt(prompt, now);
+      if (inferredStep) {
+        steps = [inferredStep];
+        intent = "搜索航班";
+        requiredPermissions = ["browser.control"];
+        console.log("[createPlan] planner selected browser.search_flights (deterministic override)");
+      }
+    }
+  }
+
+  // Deterministic safeguard: open-page requests should always use browser.open_page.
+  if (isOpenPageRequest(prompt)) {
+    const hasOpenPage = steps.some((s) => s.tool === "browser.open_page");
+    if (!hasOpenPage) {
+      const inferredStep = inferOpenPageStepFromPrompt(prompt);
+      if (inferredStep) {
+        steps = [inferredStep];
+        intent = "打开网页";
+        requiredPermissions = ["browser.control"];
+        console.log("[createPlan] planner selected browser.open_page (deterministic override)");
+      }
+    }
+  }
+
+  // Deterministic safeguard: web-search requests should always use browser.search_web.
+  if (isSearchWebRequest(prompt)) {
+    const hasSearchWeb = steps.some((s) => s.tool === "browser.search_web");
+    if (!hasSearchWeb) {
+      const inferredStep = inferSearchWebStepFromPrompt(prompt);
+      if (inferredStep) {
+        steps = [inferredStep];
+        intent = "搜索网页";
+        requiredPermissions = ["browser.control"];
+        console.log("[createPlan] planner selected browser.search_web (deterministic override)");
+      }
+    }
+  }
+
+  // Deterministic safeguard: page-summarize requests should always use browser.extract_page.
+  if (isExtractPageRequest(prompt)) {
+    const hasExtractPage = steps.some((s) => s.tool === "browser.extract_page");
+    if (!hasExtractPage) {
+      steps = [inferExtractPageStep()];
+      intent = "总结当前页面";
+      requiredPermissions = ["browser.control"];
+      console.log("[createPlan] planner selected browser.extract_page (deterministic override)");
+    }
+  }
 
   // Post-process: strip file.save steps the user didn't ask for
   const wantsFile = /保存|存储|文件|save|file|导出|export/i.test(prompt);
@@ -484,6 +694,46 @@ User: ${prompt}
     steps,
     requiredPermissions,
   };
+
+  if (plan.steps.some((s) => s.tool === "browser.search_flights")) {
+    if (!plan.requiredPermissions.includes("browser.control")) {
+      plan.requiredPermissions = [...plan.requiredPermissions, "browser.control"];
+    }
+    console.log("[createPlan] planner selected browser.search_flights", {
+      requiredPermissions: plan.requiredPermissions,
+      steps: plan.steps.map((s) => s.tool),
+    });
+  }
+
+  if (plan.steps.some((s) => s.tool === "browser.open_page")) {
+    if (!plan.requiredPermissions.includes("browser.control")) {
+      plan.requiredPermissions = [...plan.requiredPermissions, "browser.control"];
+    }
+    console.log("[createPlan] planner selected browser.open_page", {
+      requiredPermissions: plan.requiredPermissions,
+      steps: plan.steps.map((s) => s.tool),
+    });
+  }
+
+  if (plan.steps.some((s) => s.tool === "browser.search_web")) {
+    if (!plan.requiredPermissions.includes("browser.control")) {
+      plan.requiredPermissions = [...plan.requiredPermissions, "browser.control"];
+    }
+    console.log("[createPlan] planner selected browser.search_web", {
+      requiredPermissions: plan.requiredPermissions,
+      steps: plan.steps.map((s) => s.tool),
+    });
+  }
+
+  if (plan.steps.some((s) => s.tool === "browser.extract_page")) {
+    if (!plan.requiredPermissions.includes("browser.control")) {
+      plan.requiredPermissions = [...plan.requiredPermissions, "browser.control"];
+    }
+    console.log("[createPlan] planner selected browser.extract_page", {
+      requiredPermissions: plan.requiredPermissions,
+      steps: plan.steps.map((s) => s.tool),
+    });
+  }
 
   savePlan(planId, plan);
   return plan;

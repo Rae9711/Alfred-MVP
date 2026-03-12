@@ -118,6 +118,14 @@ export async function invokeConnectorTool(opts: {
   return resultPromise;
 }
 
+/**
+ * Get the connector ID associated with a given socket, if any.
+ * Used to detect which connector disconnected on ws close.
+ */
+export function getConnectorIdBySocket(socket: ConnectorSocket): string | undefined {
+  return socketToConnector.get(socket);
+}
+
 export function resolveConnectorResult(params: {
   requestId: string;
   ok: boolean;

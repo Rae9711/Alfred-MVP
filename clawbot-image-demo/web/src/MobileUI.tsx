@@ -1391,21 +1391,40 @@ export function MobileMainScreen({
           setAvatarState("error");
         }
 
+        if (ev === "tool.start") {
+          const toolId = data?.tool ?? "unknown";
+          setStepSummary((prev) => [...prev, { tool: toolId, status: "running", desc: data?.toolName }]);
+        }
+
         if (ev === "tool.success") {
           applyProgressEvent("tool_used");
-          setStepSummary((prev) => [...prev, { tool: data?.tool ?? "unknown", status: "ok", desc: data?.description }]);
+          const toolId = data?.tool ?? "unknown";
+          setStepSummary((prev) => {
+            const idx = prev.findIndex((s) => s.tool === toolId && s.status === "running");
+            if (idx < 0) return [...prev, { tool: toolId, status: "ok", desc: data?.description }];
+            const next = [...prev];
+            next[idx] = { ...next[idx], status: "ok", desc: data?.description };
+            return next;
+          });
         }
 
         if (ev === "tool.error") {
-          setStepSummary((prev) => [...prev, { tool: data?.tool ?? "unknown", status: "error", desc: data?.error }]);
+          const toolId = data?.tool ?? "unknown";
+          setStepSummary((prev) => {
+            const idx = prev.findIndex((s) => s.tool === toolId && s.status === "running");
+            if (idx < 0) return [...prev, { tool: toolId, status: "error", desc: data?.error }];
+            const next = [...prev];
+            next[idx] = { ...next[idx], status: "error", desc: data?.error };
+            return next;
+          });
           setAvatarState("error");
           hasToolErrorRef.current = true;
 
-          const toolId = String(data?.tool ?? "");
+          const toolNameForFallback = String(data?.tool ?? "");
           const errorText = String(data?.error ?? "");
           if (
-            toolId === "contacts.apple" ||
-            (toolId === "imessage.send" && /无法获取|requires a handle|\[missing:|\[error:/i.test(errorText))
+            toolNameForFallback === "contacts.apple" ||
+            (toolNameForFallback === "imessage.send" && /无法获取|requires a handle|\[missing:|\[error:/i.test(errorText))
           ) {
             setShowManualFallback(true);
             setManualFallbackReason(errorText || "联系人查找失败");
@@ -2086,8 +2105,8 @@ export function MobileMainScreen({
                   borderBottom: i < stepSummary.length - 1 ? "1px solid #E5E7EB" : "none",
                 }}
               >
-                <span style={{ fontSize: 14 }}>{s.status === "ok" ? "✓" : "✗"}</span>
-                <span style={{ fontSize: 13, color: s.status === "ok" ? "#059669" : "#DC2626" }}>
+                <span style={{ fontSize: 14 }}>{s.status === "ok" ? "✓" : s.status === "error" ? "✗" : "•"}</span>
+                <span style={{ fontSize: 13, color: s.status === "ok" ? "#059669" : s.status === "error" ? "#DC2626" : "#2563EB" }}>
                   {s.tool}
                 </span>
               </div>
@@ -2208,10 +2227,10 @@ export function MobileMainScreen({
                         gap: 8,
                         padding: "6px 0",
                         fontSize: 13,
-                        color: s.status === "ok" ? "#059669" : "#DC2626",
+                        color: s.status === "ok" ? "#059669" : s.status === "error" ? "#DC2626" : "#2563EB",
                       }}
                     >
-                      <span>{s.status === "ok" ? "✓" : "✗"}</span>
+                      <span>{s.status === "ok" ? "✓" : s.status === "error" ? "✗" : "•"}</span>
                       <span>{s.tool}</span>
                     </div>
                   ))}
