@@ -7,3 +7,4 @@ dist/
 server/src/outbox/*
 !server/src/outbox/.gitkeep
 web/dist/
+server/src/uploads/*.pdf

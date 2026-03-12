@@ -86,13 +86,13 @@ registerTool({
     }
 
     try {
-      // Dynamic import for pdf-parse module
-      const pdfParseModule = await import("pdf-parse");
-      const pdfParse = (pdfParseModule as any).default ?? pdfParseModule;
+      // Dynamic import for pdf-parse v2 module
+      const { PDFParse } = await import("pdf-parse");
 
-      const buffer = fs.readFileSync(filePath);
-      const pdfData = await pdfParse(buffer);
-      const extractedText = (pdfData.text ?? "").trim();
+      // v2 API: pass url in constructor, then call getText()
+      const parser = new PDFParse({ url: filePath });
+      const result = await parser.getText();
+      const extractedText = (result.text || "").trim();
 
       if (!extractedText) {
         return { error: "PDF appears to contain no extractable text" };

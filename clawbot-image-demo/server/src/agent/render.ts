@@ -28,6 +28,9 @@ function buildReporterPrompt(run: RunRecord): string {
     ...(s.error ? { error: s.error } : {}),
   }));
 
+  // Debug log to see what's being sent to reporter
+  console.log("[render] stepsCompact:", JSON.stringify(stepsCompact, null, 2).substring(0, 2000));
+
   // Always respond in Chinese (primary market is China)
   const langRule = "必须使用中文输出（必要的专有名词可保留英文）。";
 
@@ -43,13 +46,15 @@ Overall status: ${run.executionSummary.status}
 
 RULES:
 - Report ONLY what actually happened based on the execution results above.
+- If a tool returned text content (e.g., summaries, extracted text, search results), INCLUDE that content in your response.
+- For pdf.process, web.search, or text.generate tools: show the actual "text" or "content" field from their output.
 - If a step failed or timed out, say so explicitly. Do not paper over failures.
 - If information is missing from the execution log, say "I don't have that data." Do NOT guess.
-- Be concise. State facts. No personality or style — that comes later.
+- Be concise but complete. State facts and include relevant output content.
 - Do NOT invent tool outputs or results that aren't in the execution log above.
 - ${langRule}
 
-Output a concise factual summary for the user.`;
+Output a concise factual summary for the user, including the actual content returned by the tools.`;
 }
 
 // ── public API ───────────────────────────────────────────

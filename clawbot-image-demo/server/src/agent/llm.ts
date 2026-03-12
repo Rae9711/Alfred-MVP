@@ -38,6 +38,7 @@ const TOGETHER_API_KEY = process.env.TOGETHER_API_KEY;
 
 /**
  * Update LLM settings at runtime (called from API endpoint)
+ * Note: Empty strings from frontend don't overwrite env var values
  */
 export function updateSettings(settings: {
   llmProvider?: string;
@@ -49,19 +50,20 @@ export function updateSettings(settings: {
   kiwiKey?: string;
 }) {
   if (settings.llmProvider) currentSettings.provider = settings.llmProvider as LLMProvider;
-  if (settings.anthropicKey !== undefined) currentSettings.anthropicKey = settings.anthropicKey;
-  if (settings.qwenKey !== undefined) currentSettings.qwenKey = settings.qwenKey;
-  if (settings.geminiKey !== undefined) currentSettings.geminiKey = settings.geminiKey;
-  if (settings.ollamaUrl !== undefined) currentSettings.ollamaUrl = settings.ollamaUrl;
-  if (settings.braveSearchKey !== undefined) {
+  // Only update API keys if frontend provides non-empty values (don't clear env var values)
+  if (settings.anthropicKey) currentSettings.anthropicKey = settings.anthropicKey;
+  if (settings.qwenKey) currentSettings.qwenKey = settings.qwenKey;
+  if (settings.geminiKey) currentSettings.geminiKey = settings.geminiKey;
+  if (settings.ollamaUrl) currentSettings.ollamaUrl = settings.ollamaUrl;
+  if (settings.braveSearchKey) {
     currentSettings.braveSearchKey = settings.braveSearchKey;
     process.env.BRAVE_SEARCH_API_KEY = settings.braveSearchKey;
   }
-  if (settings.kiwiKey !== undefined) {
+  if (settings.kiwiKey) {
     currentSettings.kiwiKey = settings.kiwiKey;
     process.env.KIWI_API_KEY = settings.kiwiKey;
   }
-  console.log(`[llm] settings updated: provider=${currentSettings.provider}`);
+  console.log(`[llm] settings updated: provider=${currentSettings.provider}, hasClaude=${!!currentSettings.anthropicKey}, hasGemini=${!!currentSettings.geminiKey}, hasBrave=${!!currentSettings.braveSearchKey}`);
 }
 
 export function getSettings() {
@@ -151,39 +153,39 @@ const ROLE_CONFIG: Record<LLMRole, RoleConfig> = {
       "No prose, no markdown, no commentary. saveAs must be a plain variable name like msg or contact, never {{vars.xxx}}.",
     claudeModel: "claude-haiku-4-5",
     qwenModel: "qwen-plus",
-    geminiModel: "gemini-2.0-flash",
+    geminiModel: "gemini-flash-latest",
     ollamaModel: PLANNER_OLLAMA_MODEL,
   },
   reporter: {
     temperature: 0.1,
-    maxTokens: 512,
+    maxTokens: 4096,
     systemPrompt:
       "你是一个事实汇报助手。只报告实际发生了什么。" +
       "不要编造信息。如果数据缺失，请说明。用中文回复。",
     claudeModel: "claude-haiku-4-5",
     qwenModel: "qwen-plus",
-    geminiModel: "gemini-2.0-flash",
+    geminiModel: "gemini-flash-latest",
     ollamaModel: REPORTER_OLLAMA_MODEL,
   },
   styler: {
     temperature: 0.4,
-    maxTokens: 512,
+    maxTokens: 4096,
     systemPrompt:
       "你是风格改写器。请按指定语气重写内容，并使用中文输出。" +
       "绝对不要新增、删除或篡改事实。",
     claudeModel: "claude-haiku-4-5",
     qwenModel: "qwen-plus",
-    geminiModel: "gemini-2.0-flash",
+    geminiModel: "gemini-flash-latest",
     ollamaModel: STYLER_OLLAMA_MODEL,
   },
   tool: {
     temperature: 0.2,
-    maxTokens: 512,
+    maxTokens: 4096,
     systemPrompt:
       "你是一个内容生成工具。直接输出请求的内容，用中文回复。不要解释、不要评论。",
     claudeModel: "claude-haiku-4-5",
     qwenModel: "qwen-plus",
-    geminiModel: "gemini-2.0-flash",
+    geminiModel: "gemini-flash-latest",
     ollamaModel: "qwen2.5:1.5b",
   },
 };

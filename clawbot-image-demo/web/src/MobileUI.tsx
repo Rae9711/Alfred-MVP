@@ -52,6 +52,46 @@ export type APIConfig = {
 
 type Phase = "input" | "planning" | "planned" | "executing" | "clarifying" | "done";
 
+// Conversation history types
+export type ConversationMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: number;
+};
+
+export type Conversation = {
+  id: string;
+  title: string;
+  messages: ConversationMessage[];
+  createdAt: number;
+  updatedAt: number;
+};
+
+// Conversation storage helpers
+function generateId(): string {
+  return Math.random().toString(36).substring(2) + Date.now().toString(36);
+}
+
+function loadConversations(): Conversation[] {
+  try {
+    const stored = localStorage.getItem("conversations");
+    return stored ? JSON.parse(stored) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveConversations(conversations: Conversation[]) {
+  localStorage.setItem("conversations", JSON.stringify(conversations));
+}
+
+function getConversationTitle(firstMessage: string): string {
+  // Use first 20 characters of the first message as title
+  const cleaned = firstMessage.replace(/\n/g, " ").trim();
+  return cleaned.length > 20 ? cleaned.substring(0, 20) + "..." : cleaned;
+}
+
 // ── Constants ────────────────────────────────────────────
 
 const PERSONA_OPTIONS: Record<string, { label: string; desc: string }> = {
@@ -1297,6 +1337,16 @@ export function MobileMainScreen({
   const [stepSummary, setStepSummary] = useState<Array<{ tool: string; status: string; desc?: string }>>([]);
   const hasToolErrorRef = React.useRef(false);
 
+  // Conversation history
+  const [conversations, setConversations] = useState<Conversation[]>(() => loadConversations());
+  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
+  const [showHistorySidebar, setShowHistorySidebar] = useState(false);
+
+  // Get current conversation
+  const currentConversation = useMemo(() => {
+    return conversations.find(c => c.id === currentConversationId) || null;
+  }, [conversations, currentConversationId]);
+
   const platLabel = PLATFORMS.find((p) => p.id === identity.platform)?.label ?? identity.platform;
 
   const applyProgressEvent = (eventType: AgentEventType) => {
@@ -1376,6 +1426,31 @@ export function MobileMainScreen({
           setErrorMessage(null);
           setPhase("done");
           
+          // Save assistant response to conversation
+          if (data.message) {
+            setConversations(prev => {
+              if (!currentConversationId) return prev;
+              const updated = prev.map(conv => {
+                if (conv.id === currentConversationId) {
+                  const assistantMsg: ConversationMessage = {
+                    id: generateId(),
+                    role: "assistant",
+                    content: data.message,
+                    timestamp: Date.now(),
+                  };
+                  return {
+                    ...conv,
+                    messages: [...conv.messages, assistantMsg],
+                    updatedAt: Date.now(),
+                  };
+                }
+                return conv;
+              });
+              saveConversations(updated);
+              return updated;
+            });
+          }
+          
           // Check if there were tool errors
           if (hasToolErrorRef.current) {
             setAvatarState("error");
@@ -1407,6 +1482,24 @@ export function MobileMainScreen({
     wsClient.call("session.setActionMode", { sessionId, mode: actionMode });
   }, [wsClient, sessionId, identity.persona, actionMode]);
 
+  // Auto-sync API settings to backend on connect
+  useEffect(() => {
+    if (!connected) return;
+    const config = loadAPIConfig();
+    // Only sync if user has configured an API key
+    if (config.geminiKey || config.anthropicKey || config.qwenKey) {
+      fetch(`${getAPIBaseUrl()}/api/settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config),
+      })
+        .then((res) => {
+          if (res.ok) console.log("[API] Settings synced to backend");
+        })
+        .catch((e) => console.warn("[API] Failed to sync settings:", e));
+    }
+  }, [connected]);
+
   // Bind connector
   useEffect(() => {
     localStorage.setItem(`connector_id_${sessionId}`, connectorId);
@@ -1417,13 +1510,67 @@ export function MobileMainScreen({
 
   // ── Actions ──────────────────────────────────────────
 
+  const addMessageToConversation = (role: "user" | "assistant", content: string) => {
+    const message: ConversationMessage = {
+      id: generateId(),
+      role,
+      content,
+      timestamp: Date.now(),
+    };
+
+    setConversations(prev => {
+      let updated: Conversation[];
+      
+      if (currentConversationId) {
+        // Add to existing conversation
+        updated = prev.map(conv => {
+          if (conv.id === currentConversationId) {
+            return {
+              ...conv,
+              messages: [...conv.messages, message],
+              updatedAt: Date.now(),
+            };
+          }
+          return conv;
+        });
+      } else {
+        // Create new conversation
+        const newConv: Conversation = {
+          id: generateId(),
+          title: role === "user" ? getConversationTitle(content) : "新对话",
+          messages: [message],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        setCurrentConversationId(newConv.id);
+        updated = [newConv, ...prev];
+      }
+      
+      saveConversations(updated);
+      return updated;
+    });
+  };
+
   const startPlanning = (nextPrompt: string) => {
     if (!wsClient || !nextPrompt.trim()) return;
 
     let finalPrompt = nextPrompt;
-    if (uploadedFileId) {
-      finalPrompt = `${nextPrompt}\n\n[Attached file: ${uploadedFileId}]`;
+    
+    // Include conversation history for context (if exists)
+    if (currentConversation && currentConversation.messages.length > 0) {
+      const historyContext = currentConversation.messages
+        .slice(-6) // Last 6 messages for context
+        .map(m => `${m.role === "user" ? "用户" : "助手"}: ${m.content}`)
+        .join("\n\n");
+      finalPrompt = `[对话历史]\n${historyContext}\n\n[当前请求]\n${nextPrompt}`;
     }
+    
+    if (uploadedFileId) {
+      finalPrompt = `${finalPrompt}\n\n[Attached file: ${uploadedFileId}]`;
+    }
+
+    // Save user message to conversation
+    addMessageToConversation("user", nextPrompt);
 
     setFinalMsg("");
     setRunId(null);
@@ -1525,6 +1672,7 @@ export function MobileMainScreen({
     }
   };
 
+  // Continue in current conversation (followup)
   const newTask = () => {
     setPhase("input");
     setPrompt("");
@@ -1535,6 +1683,59 @@ export function MobileMainScreen({
     setAvatarState("idle");
     setStepSummary([]);
     hasToolErrorRef.current = false;
+    // Keep currentConversationId for followup
+  };
+
+  // Start completely new conversation
+  const startNewConversation = () => {
+    setPhase("input");
+    setPrompt("");
+    setPlan(null);
+    setFinalMsg("");
+    setErrorMessage(null);
+    setUploadedFileId(null);
+    setAvatarState("idle");
+    setStepSummary([]);
+    hasToolErrorRef.current = false;
+    setCurrentConversationId(null); // This will create a new conversation on next message
+  };
+
+  // Switch to a specific conversation
+  const switchToConversation = (convId: string) => {
+    const conv = conversations.find(c => c.id === convId);
+    if (!conv) return;
+    
+    setCurrentConversationId(convId);
+    setShowHistorySidebar(false);
+    
+    // Show the last AI response if exists
+    const lastAssistantMsg = [...conv.messages].reverse().find(m => m.role === "assistant");
+    if (lastAssistantMsg) {
+      setFinalMsg(lastAssistantMsg.content);
+      setPhase("done");
+    } else {
+      setPhase("input");
+      setFinalMsg("");
+    }
+    
+    setPrompt("");
+    setPlan(null);
+    setErrorMessage(null);
+    setStepSummary([]);
+  };
+
+  // Delete a conversation
+  const deleteConversation = (convId: string) => {
+    setConversations(prev => {
+      const updated = prev.filter(c => c.id !== convId);
+      saveConversations(updated);
+      return updated;
+    });
+    if (currentConversationId === convId) {
+      setCurrentConversationId(null);
+      setPhase("input");
+      setFinalMsg("");
+    }
   };
 
   // ── Render ───────────────────────────────────────────
@@ -1607,6 +1808,27 @@ export function MobileMainScreen({
           >
             {connected ? "在线" : "连接中..."}
           </div>
+          {/* History button */}
+          <button
+            onClick={() => setShowHistorySidebar(true)}
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 10,
+              background: "rgba(255,255,255,0.2)",
+              border: "none",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 18,
+            }}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 8v4l3 3"/>
+              <circle cx="12" cy="12" r="9"/>
+            </svg>
+          </button>
           <button
             onClick={() => setShowSettings(true)}
             style={{
@@ -1635,12 +1857,61 @@ export function MobileMainScreen({
         {/* Input Phase */}
         {phase === "input" && (
           <>
+            {/* Show conversation context if in existing conversation */}
+            {currentConversation && currentConversation.messages.length > 0 && (
+              <div style={{ ...styles.card, marginBottom: 16 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14, color: "#6B7280" }}>
+                    当前对话
+                  </div>
+                  <button
+                    onClick={startNewConversation}
+                    style={{
+                      padding: "4px 10px",
+                      borderRadius: 6,
+                      border: "1px solid #E5E7EB",
+                      background: "white",
+                      fontSize: 12,
+                      cursor: "pointer",
+                      color: "#6B7280",
+                    }}
+                  >
+                    新对话
+                  </button>
+                </div>
+                <div style={{ maxHeight: 200, overflowY: "auto" }}>
+                  {currentConversation.messages.slice(-4).map((msg) => (
+                    <div
+                      key={msg.id}
+                      style={{
+                        padding: "8px 10px",
+                        marginBottom: 6,
+                        borderRadius: 8,
+                        background: msg.role === "user" ? "#EEF2FF" : "#F3F4F6",
+                        fontSize: 12,
+                        lineHeight: 1.4,
+                      }}
+                    >
+                      <div style={{ fontWeight: 600, fontSize: 10, color: msg.role === "user" ? "#4F46E5" : "#6B7280", marginBottom: 2 }}>
+                        {msg.role === "user" ? "你" : identity.name}
+                      </div>
+                      <div style={{ whiteSpace: "pre-wrap", maxHeight: 60, overflow: "hidden" }}>
+                        {msg.content.length > 150 ? msg.content.substring(0, 150) + "..." : msg.content}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div style={styles.card}>
-              <div style={{ fontWeight: 600, marginBottom: 10, fontSize: 14 }}>输入任务</div>
+              <div style={{ fontWeight: 600, marginBottom: 10, fontSize: 14 }}>
+                {currentConversation ? "继续对话" : "输入任务"}
+              </div>
               <textarea
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
-                placeholder="告诉我你想要做什么..."
+                placeholder={currentConversation ? "继续提问..." : "告诉我你想要做什么..."}
                 style={styles.textarea}
                 rows={4}
               />
@@ -1651,7 +1922,7 @@ export function MobileMainScreen({
               disabled={!prompt.trim() || !connected}
               style={styles.primaryButton(!prompt.trim() || !connected)}
             >
-              生成方案
+              {currentConversation ? "发送" : "生成方案"}
             </button>
           </>
         )}
@@ -1947,11 +2218,11 @@ export function MobileMainScreen({
                 </div>
               )}
 
-              {/* Final message */}
-              {!isFailure && (
+              {/* Final message - show even if there were tool errors */}
+              {finalMsg && (
                 <div
                   style={{
-                    background: "#F3F4F6",
+                    background: isFailure ? "#FEF2F2" : "#F3F4F6",
                     borderRadius: 12,
                     padding: 14,
                     fontSize: 14,
@@ -1959,17 +2230,84 @@ export function MobileMainScreen({
                     whiteSpace: "pre-wrap",
                   }}
                 >
-                  {finalMsg || "任务已完成"}
+                  <div style={{ fontWeight: 600, marginBottom: 8, color: isFailure ? "#DC2626" : "#111827" }}>
+                    AI 回复
+                  </div>
+                  {finalMsg}
                 </div>
               )}
             </div>
 
-            <button
-              onClick={newTask}
-              style={styles.primaryButton(false)}
-            >
-              新任务
-            </button>
+            {/* Followup Input */}
+            <div style={styles.card}>
+              <div style={{ fontWeight: 600, marginBottom: 10, fontSize: 14 }}>继续对话</div>
+              <textarea
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                placeholder="继续提问或发送新指令..."
+                style={styles.textarea}
+                rows={3}
+              />
+              <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+                <button
+                  onClick={askPlan}
+                  disabled={!prompt.trim() || !connected}
+                  style={{
+                    ...styles.primaryButton(!prompt.trim() || !connected),
+                    flex: 1,
+                  }}
+                >
+                  发送
+                </button>
+                <button
+                  onClick={startNewConversation}
+                  style={{
+                    flex: 1,
+                    padding: "12px 20px",
+                    borderRadius: 10,
+                    border: "1px solid #E5E7EB",
+                    background: "white",
+                    color: "#6B7280",
+                    fontWeight: 600,
+                    fontSize: 14,
+                    cursor: "pointer",
+                  }}
+                >
+                  新对话
+                </button>
+              </div>
+            </div>
+
+            {/* Conversation History */}
+            {currentConversation && currentConversation.messages.length > 2 && (
+              <div style={{ ...styles.card, marginTop: 16 }}>
+                <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 14, color: "#6B7280" }}>
+                  对话记录
+                </div>
+                <div style={{ maxHeight: 300, overflowY: "auto" }}>
+                  {currentConversation.messages.slice(0, -2).map((msg, i) => (
+                    <div
+                      key={msg.id}
+                      style={{
+                        padding: "10px 12px",
+                        marginBottom: 8,
+                        borderRadius: 10,
+                        background: msg.role === "user" ? "#EEF2FF" : "#F3F4F6",
+                        fontSize: 13,
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      <div style={{ fontWeight: 600, fontSize: 11, color: msg.role === "user" ? "#4F46E5" : "#6B7280", marginBottom: 4 }}>
+                        {msg.role === "user" ? "你" : identity.name}
+                      </div>
+                      <div style={{ whiteSpace: "pre-wrap", maxHeight: 100, overflow: "hidden" }}>
+                        {msg.content.length > 200 ? msg.content.substring(0, 200) + "..." : msg.content}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </>
         );})()}
       </div>
@@ -2004,6 +2342,151 @@ export function MobileMainScreen({
 
       {showCompleteToast && (
         <TaskCompleteToast message={toastMessage} type={toastType} onDismiss={() => setShowCompleteToast(false)} />
+      )}
+
+      {/* History Sidebar */}
+      {showHistorySidebar && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            right: 0,
+            bottom: 0,
+            left: 0,
+            zIndex: 1000,
+            display: "flex",
+          }}
+        >
+          {/* Backdrop */}
+          <div
+            onClick={() => setShowHistorySidebar(false)}
+            style={{
+              flex: 1,
+              background: "rgba(0,0,0,0.4)",
+            }}
+          />
+          {/* Sidebar */}
+          <div
+            style={{
+              width: 280,
+              background: "white",
+              boxShadow: "-4px 0 20px rgba(0,0,0,0.1)",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
+            {/* Sidebar Header */}
+            <div
+              style={{
+                padding: "16px",
+                borderBottom: "1px solid #E5E7EB",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <span style={{ fontWeight: 600, fontSize: 16 }}>对话历史</span>
+              <button
+                onClick={() => setShowHistorySidebar(false)}
+                style={{
+                  border: "none",
+                  background: "none",
+                  fontSize: 20,
+                  cursor: "pointer",
+                  color: "#6B7280",
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* New Conversation Button */}
+            <button
+              onClick={() => {
+                startNewConversation();
+                setShowHistorySidebar(false);
+              }}
+              style={{
+                margin: "12px 16px",
+                padding: "10px 16px",
+                borderRadius: 8,
+                border: "1px solid #4F46E5",
+                background: "#4F46E5",
+                color: "white",
+                fontWeight: 600,
+                fontSize: 14,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <span style={{ fontSize: 18 }}>+</span>
+              新对话
+            </button>
+
+            {/* Conversation List */}
+            <div style={{ flex: 1, overflowY: "auto", padding: "0 8px" }}>
+              {conversations.length === 0 ? (
+                <div style={{ padding: 16, textAlign: "center", color: "#9CA3AF", fontSize: 13 }}>
+                  暂无对话记录
+                </div>
+              ) : (
+                conversations.map((conv) => (
+                  <div
+                    key={conv.id}
+                    style={{
+                      padding: "12px",
+                      marginBottom: 4,
+                      borderRadius: 8,
+                      background: conv.id === currentConversationId ? "#EEF2FF" : "transparent",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                    }}
+                    onClick={() => switchToConversation(conv.id)}
+                  >
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div
+                        style={{
+                          fontWeight: conv.id === currentConversationId ? 600 : 400,
+                          fontSize: 14,
+                          color: "#111827",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {conv.title}
+                      </div>
+                      <div style={{ fontSize: 11, color: "#9CA3AF", marginTop: 2 }}>
+                        {new Date(conv.updatedAt).toLocaleDateString()} · {conv.messages.length}条消息
+                      </div>
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteConversation(conv.id);
+                      }}
+                      style={{
+                        border: "none",
+                        background: "none",
+                        color: "#DC2626",
+                        fontSize: 14,
+                        cursor: "pointer",
+                        padding: "4px 8px",
+                        opacity: 0.6,
+                      }}
+                    >
+                      删除
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

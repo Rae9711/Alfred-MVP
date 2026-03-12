@@ -98,6 +98,45 @@ const PLATFORMS = [
   { id: "feishu", label: "飞书", target: "#feishu-group" },
 ];
 
+// ── Conversation History Types ───────────────────────────
+
+type ConversationMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: number;
+};
+
+type Conversation = {
+  id: string;
+  title: string;
+  messages: ConversationMessage[];
+  createdAt: number;
+  updatedAt: number;
+};
+
+function generateId(): string {
+  return Math.random().toString(36).substring(2) + Date.now().toString(36);
+}
+
+function loadConversations(): Conversation[] {
+  try {
+    const stored = localStorage.getItem("conversations");
+    return stored ? JSON.parse(stored) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveConversations(conversations: Conversation[]) {
+  localStorage.setItem("conversations", JSON.stringify(conversations));
+}
+
+function getConversationTitle(firstMessage: string): string {
+  const cleaned = firstMessage.replace(/\n/g, " ").trim();
+  return cleaned.length > 20 ? cleaned.substring(0, 20) + "..." : cleaned;
+}
+
 // ── Setup Screen ─────────────────────────────────────────
 
 function ToggleSwitch({ value, onChange, labelA, labelB }: { value: boolean; onChange: (v: boolean) => void; labelA: string; labelB: string }) {
@@ -459,6 +498,7 @@ function MainScreen({
   });
   const [stepSummary, setStepSummary] = useState<Array<{ tool: string; status: string; description?: string }>>([]);
   const [completionStatus, setCompletionStatus] = useState<"success" | "partial" | "error" | null>(null);
+  const uploadedFileStorageKey = useMemo(() => `uploaded_file_${sessionId}`, [sessionId]);
   const [uploadedFileId, setUploadedFileId] = useState<string | null>(null);
   const [clarifyQuestion, setClarifyQuestion] = useState("");
   const [clarifyAnswer, setClarifyAnswer] = useState("");
@@ -468,6 +508,29 @@ function MainScreen({
   const [agentMeta, setAgentMeta] = useState<AgentMeta>(() => loadMeta(metaStorageKey));
   const [avatarState, setAvatarState] = useState<AvatarState>("idle");
   const [lastGainXp, setLastGainXp] = useState(0);
+
+  // Conversation history state
+  const [conversations, setConversations] = useState<Conversation[]>(() => loadConversations());
+  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
+  const [showHistorySidebar, setShowHistorySidebar] = useState(false);
+
+  // Get current conversation
+  const currentConversation = useMemo(() => {
+    return conversations.find(c => c.id === currentConversationId) || null;
+  }, [conversations, currentConversationId]);
+
+  // Auto-cleanup old uploaded PDFs on page load
+  useEffect(() => {
+    const oldFileId = localStorage.getItem(uploadedFileStorageKey);
+    if (oldFileId) {
+      // Delete old file from server
+      const apiBase = import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:8080`;
+      fetch(`${apiBase}/upload/${oldFileId}`, { method: "DELETE" })
+        .then(() => console.log(`[cleanup] Deleted old PDF: ${oldFileId}`))
+        .catch((e) => console.warn(`[cleanup] Failed to delete old PDF:`, e));
+      localStorage.removeItem(uploadedFileStorageKey);
+    }
+  }, [uploadedFileStorageKey]);
   const [rewardedRunIds, setRewardedRunIds] = useState<Set<string>>(new Set());
   const [showAPISettings, setShowAPISettings] = useState(false);
 
@@ -617,6 +680,32 @@ function MainScreen({
         if (ev === "agent.rendered") {
           setFinalMsg(data.message);
           setPhase("done");
+          
+          // Save assistant response to conversation
+          if (data.message) {
+            setConversations(prev => {
+              if (!currentConversationId) return prev;
+              const updated = prev.map(conv => {
+                if (conv.id === currentConversationId) {
+                  const assistantMsg: ConversationMessage = {
+                    id: generateId(),
+                    role: "assistant",
+                    content: data.message,
+                    timestamp: Date.now(),
+                  };
+                  return {
+                    ...conv,
+                    messages: [...conv.messages, assistantMsg],
+                    updatedAt: Date.now(),
+                  };
+                }
+                return conv;
+              });
+              saveConversations(updated);
+              return updated;
+            });
+          }
+          
           // Browser notification
           if (document.hidden && "Notification" in window && Notification.permission === "granted") {
             new Notification("Alfred 阿福", { body: "任务已完成！" });
@@ -657,6 +746,25 @@ function MainScreen({
     });
   }, [wsClient, sessionId, identity.persona]);
 
+  // Auto-sync API settings to backend on connect
+  useEffect(() => {
+    if (!connected) return;
+    const config = loadAPIConfig();
+    // Only sync if user has configured an API key
+    if (config.geminiKey || config.anthropicKey || config.qwenKey) {
+      const apiBase = import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:8080`;
+      fetch(`${apiBase}/api/settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config),
+      })
+        .then((res) => {
+          if (res.ok) console.log("[API] Settings synced to backend");
+        })
+        .catch((e) => console.warn("[API] Failed to sync settings:", e));
+    }
+  }, [connected]);
+
   useEffect(() => {
     localStorage.setItem(connectorStorageKey, connectorId);
   }, [connectorStorageKey, connectorId]);
@@ -673,12 +781,111 @@ function MainScreen({
   }, [wsClient, sessionId, connectorId]);
 
   // ── Actions ──────────────────────────────────────────
+
+  const addMessageToConversation = (role: "user" | "assistant", content: string) => {
+    const message: ConversationMessage = {
+      id: generateId(),
+      role,
+      content,
+      timestamp: Date.now(),
+    };
+
+    setConversations(prev => {
+      let updated: Conversation[];
+      
+      if (currentConversationId) {
+        updated = prev.map(conv => {
+          if (conv.id === currentConversationId) {
+            return {
+              ...conv,
+              messages: [...conv.messages, message],
+              updatedAt: Date.now(),
+            };
+          }
+          return conv;
+        });
+      } else {
+        const newConv: Conversation = {
+          id: generateId(),
+          title: role === "user" ? getConversationTitle(content) : "新对话",
+          messages: [message],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        setCurrentConversationId(newConv.id);
+        updated = [newConv, ...prev];
+      }
+      
+      saveConversations(updated);
+      return updated;
+    });
+  };
+
+  const startNewConversation = () => {
+    setPhase("idle");
+    setPrompt("");
+    setPlan(null);
+    setFinalMsg("");
+    setStepSummary([]);
+    setCurrentConversationId(null);
+  };
+
+  const switchToConversation = (convId: string) => {
+    const conv = conversations.find(c => c.id === convId);
+    if (!conv) return;
+    
+    setCurrentConversationId(convId);
+    setShowHistorySidebar(false);
+    
+    const lastAssistantMsg = [...conv.messages].reverse().find(m => m.role === "assistant");
+    if (lastAssistantMsg) {
+      setFinalMsg(lastAssistantMsg.content);
+      setPhase("done");
+    } else {
+      setPhase("idle");
+      setFinalMsg("");
+    }
+    
+    setPrompt("");
+    setPlan(null);
+    setStepSummary([]);
+  };
+
+  const deleteConversation = (convId: string) => {
+    setConversations(prev => {
+      const updated = prev.filter(c => c.id !== convId);
+      saveConversations(updated);
+      return updated;
+    });
+    if (currentConversationId === convId) {
+      setCurrentConversationId(null);
+      setPhase("idle");
+      setFinalMsg("");
+    }
+  };
+
   const startPlanning = (nextPrompt: string) => {
     if (!wsClient || !nextPrompt.trim()) return;
+    
+    let finalPrompt = nextPrompt;
+    
+    // Include conversation history for context
+    if (currentConversation && currentConversation.messages.length > 0) {
+      const historyContext = currentConversation.messages
+        .slice(-6)
+        .map(m => `${m.role === "user" ? "用户" : "助手"}: ${m.content}`)
+        .join("\n\n");
+      finalPrompt = `[对话历史]\n${historyContext}\n\n[当前请求]\n${nextPrompt}`;
+    }
+    
     // If a PDF was uploaded, append file reference to the prompt
     if (uploadedFileId) {
-      nextPrompt = `${nextPrompt}\n\n[Attached file: ${uploadedFileId}]`;
+      finalPrompt = `${finalPrompt}\n\n[Attached file: ${uploadedFileId}]`;
     }
+    
+    // Save user message to conversation
+    addMessageToConversation("user", nextPrompt);
+    
     setLogs([]);
     setFinalMsg("");
     setRunId(null);
@@ -698,7 +905,7 @@ function MainScreen({
     wsClient.call("agent.plan", {
       sessionId,
       intent: "process_text",
-      prompt: nextPrompt,
+      prompt: finalPrompt,
       platform: identity.platform,
     });
   };
@@ -955,6 +1162,29 @@ function MainScreen({
               登出
             </button>
           )}
+
+          {/* History button */}
+          <button
+            onClick={() => setShowHistorySidebar(true)}
+            style={{
+              padding: "4px 10px",
+              borderRadius: 6,
+              border: "1px solid #E5E7EB",
+              background: "white",
+              fontSize: 12,
+              color: "#6B7280",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 8v4l3 3"/>
+              <circle cx="12" cy="12" r="9"/>
+            </svg>
+            对话历史
+          </button>
         </div>
       </header>
 
@@ -1051,6 +1281,7 @@ function MainScreen({
                           const json = await res.json();
                           if (json.fileId) {
                             setUploadedFileId(json.fileId);
+                            localStorage.setItem(uploadedFileStorageKey, json.fileId);
                           }
                         } catch (err) {
                           console.error("Upload failed:", err);
@@ -1059,9 +1290,34 @@ function MainScreen({
                     />
                   </label>
                   {uploadedFileId && (
-                    <span style={{ fontSize: 12, color: "#059669" }}>
-                      已上传: {uploadedFileId}
-                    </span>
+                    <>
+                      <span style={{ fontSize: 12, color: "#059669" }}>
+                        已上传: {uploadedFileId}
+                      </span>
+                      <button
+                        onClick={async () => {
+                          try {
+                            const apiBase = import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:8080`;
+                            await fetch(`${apiBase}/upload/${uploadedFileId}`, { method: "DELETE" });
+                            setUploadedFileId(null);
+                            localStorage.removeItem(uploadedFileStorageKey);
+                          } catch (err) {
+                            console.error("Delete failed:", err);
+                          }
+                        }}
+                        style={{
+                          padding: "4px 8px",
+                          borderRadius: 6,
+                          border: "1px solid #E5E7EB",
+                          background: "white",
+                          fontSize: 12,
+                          cursor: "pointer",
+                          color: "#DC2626",
+                        }}
+                      >
+                        删除
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
@@ -1380,11 +1636,207 @@ function MainScreen({
                     </button>
                   ))}
                 </div>
+
+                {/* Followup input */}
+                <div style={{ marginTop: 16, borderTop: "1px solid #E5E7EB", paddingTop: 16 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "#6B7280" }}>
+                    继续对话
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input
+                      value={prompt}
+                      onChange={(e) => setPrompt(e.target.value)}
+                      placeholder="继续提问..."
+                      style={{
+                        flex: 1,
+                        padding: "8px 12px",
+                        borderRadius: 8,
+                        border: "1px solid #D1D5DB",
+                        fontSize: 14,
+                        outline: "none",
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && prompt.trim()) askPlan();
+                      }}
+                    />
+                    <button
+                      onClick={askPlan}
+                      disabled={!prompt.trim() || !connected}
+                      style={{
+                        padding: "8px 16px",
+                        borderRadius: 8,
+                        border: "none",
+                        background: prompt.trim() && connected ? "#4F46E5" : "#D1D5DB",
+                        color: "white",
+                        fontSize: 14,
+                        fontWeight: 600,
+                        cursor: prompt.trim() && connected ? "pointer" : "not-allowed",
+                      }}
+                    >
+                      发送
+                    </button>
+                    <button
+                      onClick={startNewConversation}
+                      style={{
+                        padding: "8px 16px",
+                        borderRadius: 8,
+                        border: "1px solid #E5E7EB",
+                        background: "white",
+                        color: "#6B7280",
+                        fontSize: 14,
+                        cursor: "pointer",
+                      }}
+                    >
+                      新对话
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
           </div>
         </div>
       </div>
+
+      {/* History Sidebar */}
+      {showHistorySidebar && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            right: 0,
+            bottom: 0,
+            left: 0,
+            zIndex: 1000,
+            display: "flex",
+          }}
+        >
+          <div
+            onClick={() => setShowHistorySidebar(false)}
+            style={{
+              flex: 1,
+              background: "rgba(0,0,0,0.4)",
+            }}
+          />
+          <div
+            style={{
+              width: 320,
+              background: "white",
+              boxShadow: "-4px 0 20px rgba(0,0,0,0.1)",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
+            <div
+              style={{
+                padding: "16px 20px",
+                borderBottom: "1px solid #E5E7EB",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <span style={{ fontWeight: 600, fontSize: 16 }}>对话历史</span>
+              <button
+                onClick={() => setShowHistorySidebar(false)}
+                style={{
+                  border: "none",
+                  background: "none",
+                  fontSize: 20,
+                  cursor: "pointer",
+                  color: "#6B7280",
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <button
+              onClick={() => {
+                startNewConversation();
+                setShowHistorySidebar(false);
+              }}
+              style={{
+                margin: "16px 20px",
+                padding: "10px 16px",
+                borderRadius: 8,
+                border: "1px solid #4F46E5",
+                background: "#4F46E5",
+                color: "white",
+                fontWeight: 600,
+                fontSize: 14,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <span style={{ fontSize: 18 }}>+</span>
+              新对话
+            </button>
+
+            <div style={{ flex: 1, overflowY: "auto", padding: "0 12px" }}>
+              {conversations.length === 0 ? (
+                <div style={{ padding: 20, textAlign: "center", color: "#9CA3AF", fontSize: 14 }}>
+                  暂无对话记录
+                </div>
+              ) : (
+                conversations.map((conv) => (
+                  <div
+                    key={conv.id}
+                    style={{
+                      padding: "14px",
+                      marginBottom: 8,
+                      borderRadius: 10,
+                      background: conv.id === currentConversationId ? "#EEF2FF" : "#F9FAFB",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      transition: "all 0.15s",
+                    }}
+                    onClick={() => switchToConversation(conv.id)}
+                  >
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div
+                        style={{
+                          fontWeight: conv.id === currentConversationId ? 600 : 400,
+                          fontSize: 14,
+                          color: "#111827",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {conv.title}
+                      </div>
+                      <div style={{ fontSize: 12, color: "#9CA3AF", marginTop: 4 }}>
+                        {new Date(conv.updatedAt).toLocaleDateString()} · {conv.messages.length}条消息
+                      </div>
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteConversation(conv.id);
+                      }}
+                      style={{
+                        border: "none",
+                        background: "none",
+                        color: "#DC2626",
+                        fontSize: 13,
+                        cursor: "pointer",
+                        padding: "6px 10px",
+                        opacity: 0.6,
+                      }}
+                    >
+                      删除
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

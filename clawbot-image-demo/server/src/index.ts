@@ -189,7 +189,7 @@ app.post("/api/settings/test", async (req, res) => {
     const result = await chatCompletion({
       messages: [{ role: "user", content: "Say 'OK' in Chinese." }],
       role: "reporter",
-      maxTokens: 10,
+      maxTokens: 100,
     });
 
     res.json({ 
@@ -232,6 +232,29 @@ app.post("/upload", upload.single("file"), (req, res) => {
   const fileId = path.basename(newPath);
   console.log(`[upload] file saved: ${fileId}`);
   res.json({ ok: true, fileId });
+});
+
+// Delete uploaded file endpoint
+app.delete("/upload/:fileId", (req, res) => {
+  const { fileId } = req.params;
+  // Validate fileId to prevent directory traversal
+  if (!fileId || fileId.includes("/") || fileId.includes("..")) {
+    res.status(400).json({ error: "Invalid fileId" });
+    return;
+  }
+  const filePath = path.join(uploadsDir, fileId);
+  try {
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      console.log(`[upload] file deleted: ${fileId}`);
+      res.json({ ok: true });
+    } else {
+      res.status(404).json({ error: "File not found" });
+    }
+  } catch (e: any) {
+    console.error(`[upload] delete failed: ${e.message}`);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ── WeCom Kefu webhook (微信客服回调) ──
