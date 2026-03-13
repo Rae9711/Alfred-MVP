@@ -88,54 +88,11 @@ These tools run locally on the server — no browser or external API needed.
 - Each plan shows the tools, arguments, and data flow between steps
 - User must approve before execution (permission checkboxes for sensitive actions)
 """
-# Alfred (阿福) — AI Personal Assistant
 
 Comprehensive developer README for the Alfred / Clawbot project. This document describes repository layout, local development, macOS Connector usage (Playwright-driven browser automation, AppleScript/JXA integrations), testing, and a curated list of demo prompts you can show in demos.
 
 NOTE: this README focuses on the `clawbot-image-demo` workspace found at `clawbot-image-demo/` inside this repository. The server (backend) runs at `clawbot-image-demo/server` and the web frontend at `clawbot-image-demo/web`.
 
-Contents
-- Overview
-- Architecture
-- Local development (install, run, test)
-- Connector (macOS) instructions
-- Common operations & troubleshooting
-- End-to-end demo prompts (curated and localized)
-- Project structure (summary)
-- Deployment notes
-
---
-
-## Overview
-
-Alfred is a human-in-the-loop agent platform that turns natural language into an executable plan of small tools. Plans are reviewed and approved via a UI; many steps execute through a local Connector (Mac) that controls a real browser and desktop apps using Playwright and native automation.
-
-Key capabilities
-- Generate and run multi-step plans (LLM planner → tool execution)
-- Control a real browser for Gmail, ChatGPT, Google Calendar, flights, and web scraping
-- Access macOS apps and services: Contacts, iMessage, Reminders, open apps
-- WeCom (企业微信) Kefu webhook integration for WeChat messaging
-
---
-
-## Architecture (high level)
-
-User (Web UI) → WebSocket → Server (Express + WS)
-                                                                                                                ↓
-                                                                                     AI Planner (LLM)
-                                                                                                                ↓
-                                                                                     Execution Engine
-                                                                                                                ↓
-                                                                      ┌───────────┼───────────────┐
-                                                                      ↓           ↓               ↓
-                                                 Server Tools   Connector Tools   WeCom Kefu
-                                                 (cloud APIs)   (macOS local)     (WeChat messaging)
-
-Important runtime invariants
-- The Connector owns Playwright browser/context lifecycle on macOS. Server routes browser-related tools to the Connector by WebSocket.
-- The server keeps an in-memory session map and may persist to Supabase if configured.
-
---
 
 ## Local development
 
@@ -331,13 +288,5 @@ docker compose up -d
 Render.com
 
 Push to GitHub and connect the repository to Render. Add required environment variables in the Render dashboard (`OLLAMA_URL`, `ANTHROPIC_API_KEY`, `WECOM_*`, etc.).
-
---
-
-If you'd like, I can also:
-- Add a short `README.dev.md` with one-line commands for restarting Connector and running tests.
-- Create a `DEMO_PROMPTS.md` file enumerating the prompts and expected outcomes for each demo step.
-
-Pull requests, contributions, and bug reports are welcome. Thank you for using Alfred.
 
 """
