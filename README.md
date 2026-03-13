@@ -87,210 +87,257 @@ These tools run locally on the server — no browser or external API needed.
 - Natural language input → structured JSON execution plan
 - Each plan shows the tools, arguments, and data flow between steps
 - User must approve before execution (permission checkboxes for sensitive actions)
-- Supports compound tasks (e.g., "look up Adam's contact and send him a WeChat message about dinner Friday")
+"""
+# Alfred (阿福) — AI Personal Assistant
 
-### WeChat Integration (WeCom Kefu)
+Comprehensive developer README for the Alfred / Clawbot project. This document describes repository layout, local development, macOS Connector usage (Playwright-driven browser automation, AppleScript/JXA integrations), testing, and a curated list of demo prompts you can show in demos.
 
-Uses Tencent's official WeCom (企业微信) Customer Service API for WeChat messaging:
+NOTE: this README focuses on the `clawbot-image-demo` workspace found at `clawbot-image-demo/` inside this repository. The server (backend) runs at `clawbot-image-demo/server` and the web frontend at `clawbot-image-demo/web`.
 
-- **Bidirectional**: send and receive messages with any WeChat user
-- **Official API**: no risk of account bans (unlike iPad/web protocol approaches)
-- **Auto-reply webhook**: incoming WeChat messages trigger the AI agent pipeline — plan, execute, and reply automatically
-- **Welcome messages**: automatic greeting when a new user starts a conversation
+Contents
+- Overview
+- Architecture
+- Local development (install, run, test)
+- Connector (macOS) instructions
+- Common operations & troubleshooting
+- End-to-end demo prompts (curated and localized)
+- Project structure (summary)
+- Deployment notes
 
-### Supabase Auth & Persistence
+--
 
-- Optional authentication via Supabase (email/password login)
-- Sessions, plans, and execution runs persist to Supabase PostgreSQL
-- Write-through cache: in-memory Map for reads, async persist to DB
-- Graceful fallback: works fully in-memory when Supabase is not configured
+## Overview
 
-### Connector System
+Alfred is a human-in-the-loop agent platform that turns natural language into an executable plan of small tools. Plans are reviewed and approved via a UI; many steps execute through a local Connector (Mac) that controls a real browser and desktop apps using Playwright and native automation.
 
-A WebSocket-based bridge that allows the cloud server to invoke tools on the user's local Mac:
+Key capabilities
+- Generate and run multi-step plans (LLM planner → tool execution)
+- Control a real browser for Gmail, ChatGPT, Google Calendar, flights, and web scraping
+- Access macOS apps and services: Contacts, iMessage, Reminders, open apps
+- WeCom (企业微信) Kefu webhook integration for WeChat messaging
 
-- **Browser tools** — Playwright controls a real Chromium browser for web tasks (Gmail, Calendar, flights, search)
-- `app.open` — launches installed macOS apps via `open -a`
-- `contacts.apple` — queries macOS Contacts via JXA (JavaScript for Automation)
-- `imessage.send` — sends iMessages via AppleScript
-- `reminders.manage` — manages Apple Reminders via JXA
-- Auto-reconnect on disconnect
-- Connector ID binding via the web UI
+--
 
-### Agent Avatar (养成系统)
+## Architecture (high level)
 
-- Animated character with states: idle, thinking, focused, success, error, sleep
-- XP and leveling system based on task completion
-- Cosmetic customization (head, face, back, halo, badge)
-- Streak tracking for daily interaction
+User (Web UI) → WebSocket → Server (Express + WS)
+                                                                                                                ↓
+                                                                                     AI Planner (LLM)
+                                                                                                                ↓
+                                                                                     Execution Engine
+                                                                                                                ↓
+                                                                      ┌───────────┼───────────────┐
+                                                                      ↓           ↓               ↓
+                                                 Server Tools   Connector Tools   WeCom Kefu
+                                                 (cloud APIs)   (macOS local)     (WeChat messaging)
 
----
+Important runtime invariants
+- The Connector owns Playwright browser/context lifecycle on macOS. Server routes browser-related tools to the Connector by WebSocket.
+- The server keeps an in-memory session map and may persist to Supabase if configured.
 
-## Setup
+--
 
-### Prerequisites
+## Local development
 
-- Node.js 18+
-- macOS (for Connector tools — contacts, iMessage, reminders)
+Prerequisites
+- Node.js 18+ (Node 20 recommended)
+- On macOS for Connector features: access to Contacts, iMessage, Playwright (Chromium)
+- Optional: Docker for containerized runs
 
-### 1. Install dependencies
+Install dependencies
 
 ```bash
-cd clawbot-image-demo/server && npm install
-cd ../web && npm install
+# server deps
+cd clawbot-image-demo/server
+npm install
+
+# frontend deps
+cd ../web
+npm install
+
+# project root (optional helper scripts)
+cd ../..
 ```
 
-### 2. Configure environment variables
-
-Copy `.env.example` to `.env` in the server directory and fill in:
+Environment
+- Copy and edit server env example
 
 ```bash
 cp clawbot-image-demo/server/.env.example clawbot-image-demo/server/.env
+# then edit clawbot-image-demo/server/.env to add keys
 ```
 
-**Required for core functionality:**
-- `LLM_PROVIDER` — `claude` or `ollama`
-- `ANTHROPIC_API_KEY` — Claude API key (if using Claude)
+Recommended env entries (development)
+- `PORT` (default 8080)
+- `OLLAMA_URL` / `LLM_PROVIDER` / provider keys (`ANTHROPIC_API_KEY`, etc.)
+- `WECOM_*` variables for WeChat (only if enabling WeCom Kefu)
 
-**For WeChat (WeCom Kefu):**
-- `WECOM_CORP_ID` — WeCom enterprise ID
-- `WECOM_CORP_SECRET` — App secret with Kefu permissions
-- `WECOM_KF_ID` — Kefu account ID (starts with `wk`)
-- `WECOM_CALLBACK_TOKEN` — Callback verification token
-- `WECOM_CALLBACK_AES_KEY` — 43-char AES key for message decryption
-
-**For email/calendar:**
-- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`
-
-**For web search:**
-- `BRAVE_SEARCH_API_KEY`
-
-**For Supabase auth (optional):**
-- `SUPABASE_URL`, `SUPABASE_KEY`
-
-### 3. Start the server
+Run the server
 
 ```bash
 cd clawbot-image-demo/server
 npm run dev
 ```
 
-### 4. Start the frontend
+Run the web frontend (Vite)
 
 ```bash
 cd clawbot-image-demo/web
 npm run dev
+# open http://localhost:5173
 ```
 
-### 5. Start the Connector (for macOS local tools)
+Start the Connector (macOS local agent)
 
 ```bash
 cd clawbot-image-demo/server
-CONNECTOR_ID=your-name-mac CONNECTOR_SERVER_WS=ws://127.0.0.1:8081 npx tsx src/connector/index.ts
+# use your connector id (e.g., rae-mac)
+CONNECTOR_ID=rae-mac CONNECTOR_SERVER_WS=ws://localhost:8080 npm run connector
 ```
 
-Then in the web UI, enter the same Connector ID and click "绑定".
+The Connector will connect to the server via WebSocket and register its ID. The web UI can then bind sessions to that Connector ID to route browser and desktop tool calls.
 
-### 6. Open the app
+--
 
-Navigate to `http://localhost:5173`
+## Running tests and demos
 
----
+The repo contains runnable demo/test scripts under `server/src/tests/`.
 
-## WeCom Kefu Setup
+Examples
 
-To enable real WeChat messaging:
+```bash
+# minimal lifecycle test (Playwright lifecycle validation)
+npx tsx clawbot-image-demo/server/src/tests/test-playwright-lifecycle.ts
 
-1. Register at [work.weixin.qq.com](https://work.weixin.qq.com)
-2. Create a self-built app (自建应用) with 微信客服 permissions
-3. Create a Kefu account — note the `open_kfid`
-4. Generate a "Contact Me" QR code for WeChat users to scan
-5. Configure the callback URL to `https://your-domain/webhook/wechat`
-6. Fill in the `WECOM_*` env vars in `.env`
+# investor-demo (full plan: search → generate → compose Gmail draft)
+npx tsx clawbot-image-demo/server/src/tests/test-investor-demo.ts
 
-WeChat users scan the QR code → start chatting → Albert auto-replies via the AI agent.
-
----
-
-## Example Prompts
-
-```
-给文件传输助手发微信消息说：你好
-查一下Adam的手机号
-搜索一下最近的AI新闻
-帮我写一段生日祝福发给查理
-查看我的邮件
-下周五晚上8点和Adam吃饭
-提醒我明天给妈妈打电话
-帮我总结这个PDF
+# run all tool tests (may require connector and env config)
+npx tsx clawbot-image-demo/server/src/tests/test-all-tools.ts
 ```
 
----
+Troubleshooting
+- If a tool fails with "must be executed via the local connector" make sure `CONNECTOR_ID` is registered and the session is bound to that connector (see below). Use `lsof -iTCP:8080 -sTCP:LISTEN` to confirm server is listening.
+- If Playwright errors mention "Target page, context or browser has been closed" the Connector's Playwright lifecycle manager may have recreated browser/context; restart the Connector and re-run the test.
 
-## Project Structure
+--
+
+## Connector usage and session binding
+
+How the server routes connector-capable tools
+- Many `browser.*` tools and `app.open`, `contacts.apple`, `imessage.send`, etc., are flagged to require a Connector.
+- `executePlan()` checks `sessionStore.getConnectorId(sessionId)` and `connectorHub.hasConnector(connId)` and forwards calls to that connector ID.
+
+Bind sessions to a connector (web UI or via WebSocket/CLI helper)
+
+Example: bind by WebSocket message (server is running)
+
+```js
+// send over ws: { id: 1, method: 'session.bindConnector', params: { sessionId: 'test-session', connectorId: 'rae-mac' }}
+```
+
+Or via helper script executed against the running server (example used during development):
+
+```bash
+npx tsx -e "import('./clawbot-image-demo/server/src/sessionStore.js').then(m=>m.bindConnector('test-session','rae-mac'))"
+```
+
+Once a session is bound, `executePlan()` will route connector-capable tool calls to the connector and wait for results.
+
+--
+
+## Demo prompts (curated)
+
+These prompts are formatted for easy demoing. The list includes English and Chinese variants and ranges from simple queries to multi-step workflows. Use these with the web UI or in `test-*` scripts (replace session IDs):
+
+- Email / Compose
+       - "Draft an email to my team summarizing the top 3 AI funding rounds this month."
+       - "帮我写一封邮件给王华，说明我们下周产品发布会的议程并附上会议链接。"
+
+- Research / Web
+       - "Search the web for the latest news about autonomous vehicles and summarize three key points."
+       - "搜索最近一周内有关GPT模型安全性的报道，并给出要点摘要。"
+
+- Browser automation
+       - "Open ChatGPT and submit: 'Write a short product update email for marketing.'"
+       - "打开 Gmail，点击撰写，填写收件人 test@example.com，主题 '测试'，正文写 '这是一封测试邮件'（不要发送）。"
+
+- Calendar & Reminders
+       - "Schedule a 30-minute meeting with Alice next Tuesday at 10am and add Zoom link."
+       - "下周五晚上8点和Adam吃饭，添加到日历并提醒我提前1小时。"
+
+- Contacts & Messaging
+       - "Look up 'Charlie' in my contacts and start an iMessage draft saying 'Are we still on for Friday?'."
+       - "给文件传输助手发微信消息：我刚上传了新图片，请查看。"
+
+- PDF / Documents
+       - "Summarize the attached PDF into three bullet points and draft an email to the team with the summary."
+
+- Flights / Travel
+       - "Search Google Flights for a one-way ticket from SFO to JFK departing 2026-04-01 and show cheapest options."
+
+- Agent / Compound tasks
+       - "Find my last email from investor 'Sarah', summarize it, and draft a reply proposing a meeting next week."
+       - "检查我的收件箱，找到来自 'hr@company.com' 的最新邮件并把摘要发到我的微信。"
+
+Tips for demos
+- If a connector-required step is included, ensure the Connector is running and the session is bound to it.
+- Use `test-playwright-lifecycle.ts` to verify the Connector's Playwright lifecycle before running large demos.
+
+--
+
+## Project structure (short)
 
 ```
 clawbot-image-demo/
-├── server/
-│   ├── src/
-│   │   ├── index.ts              # Express + WebSocket server, webhook handlers
-│   │   ├── agent/
-│   │   │   ├── plan.ts           # AI planner (prompt engineering, JSON extraction)
-│   │   │   ├── render.ts         # Final response renderer
-│   │   │   ├── executeStore.ts   # Execution run storage
-│   │   │   ├── llm.ts            # LLM provider abstraction (Claude / Ollama)
-│   │   │   └── tools/
-│   │   │       ├── registry.ts   # Tool registration and catalog
-│   │   │       ├── wechat.send.ts    # WeCom Kefu integration
-│   │   │       ├── contacts.apple.ts # macOS Contacts via JXA
-│   │   │       ├── imessage.send.ts  # iMessage via AppleScript
-│   │   │       ├── email.send.ts     # Gmail send
-│   │   │       ├── email.read.ts     # Gmail read
-│   │   │       ├── calendar.ts       # Google Calendar
-│   │   │       ├── reminders.ts      # Apple Reminders
-│   │   │       ├── web.search.ts     # Brave Search
-│   │   │       ├── flights.search.ts # Kiwi Flights
-│   │   │       ├── text.generate.ts  # LLM text generation
-│   │   │       ├── pdf.process.ts    # PDF extraction/summarization
-│   │   │       └── clarify.ts        # Clarification prompt
-│   │   ├── connector/
-│   │   │   └── index.ts          # Connector WebSocket bridge
-│   │   ├── connectorHub.ts       # Server-side connector management
-│   │   ├── sessionStore.ts       # Session management
-│   │   ├── planStore.ts          # Plan storage
-│   │   ├── googleAuth.ts         # Google OAuth token management
-│   │   └── db/
-│   │       ├── supabase.ts       # Supabase client
-│   │       └── schema.sql        # Database schema
-│   └── .env.example
-├── web/
-│   ├── src/
-│   │   ├── App.tsx               # Main app with WebSocket, auth gate
-│   │   ├── components/
-│   │   │   ├── ProposedPlan.tsx   # Plan review UI
-│   │   │   ├── ExecutionLog.tsx   # Live execution viewer
-│   │   │   ├── FinalAnswer.tsx    # Result display
-│   │   │   ├── AgentAvatarCard.tsx # Agent character/avatar
-│   │   │   └── AuthScreen.tsx    # Login/signup screen
-│   │   └── api/
-│   │       ├── ws.ts             # WebSocket client with auto-reconnect
-│   │       └── supabase.ts       # Supabase frontend client
-│   └── .env
-├── docker-compose.yml            # Production deployment config
-└── render.yaml                   # Render.com deployment config
+├─ server/                 # backend (Express + WS + tools)
+├─ web/                    # frontend (Vite + React)
+├─ ios/                    # iOS project artifacts (Capacitor)
+└─ render.yaml, docker-compose.yml
 ```
 
----
+Files of interest
+- `server/src/index.ts` — main server with WebSocket handlers and plan execution
+- `server/src/connector/index.ts` — Connector process (runs on macOS)
+- `server/src/connector/browserTools` — Playwright manager and browser task implementations
+- `server/src/tests` — demo and test scripts (investor demo, lifecycle test, etc.)
+
+--
+
+## Troubleshooting & notes
+
+- Port collisions: kill processes listening on `8080` or `5173` (server/frontend) before starting. Example:
+
+```bash
+# free ports 8080 and 5173
+pids=$(lsof -t -iTCP:8080 -sTCP:LISTEN || true); if [ -n "$pids" ]; then kill -9 $pids; fi
+pids2=$(lsof -t -iTCP:5173 -sTCP:LISTEN || true); if [ -n "$pids2" ]; then kill -9 $pids2; fi
+```
+
+- Connector flapping: if connector repeatedly registers then disconnects, check for duplicate connector processes and stop the extras. Use `ps aux | grep connector`.
+- Playwright lifecycle: the Connector contains robust logic to avoid returning closed pages; if you still see closed-page errors, restart the Connector and re-run the lifecycle test.
+
+--
 
 ## Deployment
 
-### Docker Compose
+Docker (compose)
 
 ```bash
 cd clawbot-image-demo
 docker compose up -d
 ```
 
-### Render.com
+Render.com
 
-Push to GitHub and connect the repo in Render. The `render.yaml` defines the service configuration. Add all `WECOM_*`, `ANTHROPIC_API_KEY`, and other secrets as environment variables in the Render dashboard.
+Push to GitHub and connect the repository to Render. Add required environment variables in the Render dashboard (`OLLAMA_URL`, `ANTHROPIC_API_KEY`, `WECOM_*`, etc.).
+
+--
+
+If you'd like, I can also:
+- Add a short `README.dev.md` with one-line commands for restarting Connector and running tests.
+- Create a `DEMO_PROMPTS.md` file enumerating the prompts and expected outcomes for each demo step.
+
+Pull requests, contributions, and bug reports are welcome. Thank you for using Alfred.
+
+"""
