@@ -5,6 +5,7 @@ import { nanoid } from "nanoid";
 import { getTool } from "../agent/tools/registry.js";
 import "../agent/tools/index.js";
 import { isBrowserTool, executeBrowserTool } from "./browserTools/index.js";
+import { openApp } from "./appTools/openApp.js";
 
 const SERVER_WS_URL = process.env.CONNECTOR_SERVER_WS ?? "ws://127.0.0.1:8080";
 const CONNECTOR_ID = (process.env.CONNECTOR_ID ?? "").trim();
@@ -75,6 +76,18 @@ function connect() {
     const args = msg?.data?.args ?? {};
 
     if (!requestId || !toolId) {
+      return;
+    }
+
+    // Handle app.open locally via macOS `open -a`
+    if (toolId === "app.open") {
+      console.log(`[connector] app.open: name=${JSON.stringify(args.name)}`);
+      try {
+        const result = await openApp(args as any);
+        call(ws, "connector.result", { requestId, ok: true, result });
+      } catch (e: any) {
+        call(ws, "connector.result", { requestId, ok: false, error: e?.message || String(e) });
+      }
       return;
     }
 

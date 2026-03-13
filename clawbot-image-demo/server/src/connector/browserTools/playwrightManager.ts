@@ -10,7 +10,8 @@
  * - Pages are NOT closed automatically after tasks
  */
 
-import { chromium, Browser, BrowserContext, Page } from "playwright";
+import { chromium } from "playwright";
+import type { Browser, BrowserContext, Page } from "playwright";
 
 // ── Configuration ────────────────────────────────────────
 
@@ -50,6 +51,8 @@ export interface BrowserSession {
 let browser: Browser | null = null;
 const sessions = new Map<string, BrowserSession>();
 let cleanupTimer: NodeJS.Timeout | null = null;
+let sharedContext: BrowserContext | null = null;
+let lastBrowserLaunchTime = 0;
 
 // ── Browser Lifecycle ────────────────────────────────────
 
@@ -57,12 +60,29 @@ let cleanupTimer: NodeJS.Timeout | null = null;
  * Get or create the shared browser instance.
  */
 export async function getBrowser(): Promise<Browser> {
-  if (!browser || !browser.isConnected()) {
-    console.log("[playwright] Launching browser...");
+  try {
+    const hasBrowser = !!browser;
+    const connected = hasBrowser && typeof (browser as any).isConnected === "function" ? (browser as any).isConnected() : hasBrowser;
+
+    if (!hasBrowser || !connected) {
+      console.log("[playwright] No browser or disconnected — launching new browser instance...");
+      browser = await chromium.launch(BROWSER_OPTIONS);
+      lastBrowserLaunchTime = Date.now();
+      console.log("[playwright] Browser launched");
+      // Do NOT automatically close or null out sharedContext here; recreate below if needed
+      if (sharedContext && (sharedContext as any).isClosed && (sharedContext as any).isClosed()) {
+        sharedContext = null;
+      }
+      // Start cleanup timer if not running
+      startCleanupTimer();
+    } else {
+      console.log("[playwright] Reusing existing browser instance (connected)");
+    }
+  } catch (e) {
+    console.log('[playwright] getBrowser encountered error, launching fresh browser', e);
     browser = await chromium.launch(BROWSER_OPTIONS);
-    console.log("[playwright] Browser launched");
-    
-    // Start cleanup timer
+    lastBrowserLaunchTime = Date.now();
+    sharedContext = null;
     startCleanupTimer();
   }
   return browser;
@@ -79,17 +99,76 @@ export async function getBrowser(): Promise<Browser> {
 export async function getOrCreateSession(sessionId: string = "default"): Promise<BrowserSession> {
   // Check for existing session
   const existing = sessions.get(sessionId);
-  if (existing && existing.state !== "closed") {
-    existing.lastActivity = Date.now();
-    existing.state = "active";
-    console.log(`[playwright] Reusing session: ${sessionId}`);
-    return existing;
+  if (existing) {
+    // If session explicitly closed, recreate
+    if (existing.state === "closed") {
+      await resetSession(sessionId);
+    } else {
+      // If the page or context was closed externally, reset and recreate
+      try {
+        const pageClosed = existing.page?.isClosed ? existing.page.isClosed() : false;
+        const ctxClosed = existing.context && (existing.context as any).isClosed ? (existing.context as any).isClosed() : false;
+        console.log(`[playwright] Existing session check — session=${sessionId} page.isClosed=${pageClosed} context.isClosed=${ctxClosed}`);
+
+        // If context is closed, force a full reset for this session
+        if (ctxClosed) {
+          console.log(`[playwright] Session context closed, resetting session: ${sessionId}`);
+          await resetSession(sessionId);
+        } else if (pageClosed) {
+          // If the page is closed but context is still present, create a new page in same context
+          console.log(`[playwright] Session page closed; creating new page in same context: ${sessionId}`);
+          const ctx = existing.context ?? sharedContext;
+          // If context is closed or missing, ensure we recreate shared context
+          if (!ctx || ((ctx as any).isClosed && (ctx as any).isClosed())) {
+            console.log(`[playwright] No live context available for session ${sessionId}, recreating shared context`);
+            const b = await getBrowser();
+            sharedContext = await b.newContext(CONTEXT_OPTIONS);
+            existing.context = sharedContext;
+          }
+          if (existing.context) {
+            const newPage = await existing.context.newPage();
+            existing.page = newPage;
+            existing.lastActivity = Date.now();
+            existing.state = "active";
+            console.log(`[playwright] Replaced closed page with new page for session: ${sessionId}`);
+            return existing;
+          }
+          // If no context, reset to recreate everything
+          await resetSession(sessionId);
+        } else {
+          existing.lastActivity = Date.now();
+          existing.state = "active";
+          console.log(`[playwright] Reusing session: ${sessionId}`);
+          return existing;
+        }
+      } catch (e) {
+        // If any error inspecting the page, reset and recreate
+        console.log(`[playwright] Error checking session page, recreating: ${sessionId}`, e);
+        await resetSession(sessionId);
+      }
+    }
   }
   
   // Create new session
   console.log(`[playwright] Creating session: ${sessionId}`);
   const b = await getBrowser();
-  const context = await b.newContext(CONTEXT_OPTIONS);
+
+  // Reuse a shared context when possible so we keep one browser window
+  try {
+    if (!sharedContext || ((sharedContext as any).isClosed && (sharedContext as any).isClosed())) {
+      console.log(`[playwright] Creating shared browser context`);
+      sharedContext = await b.newContext(CONTEXT_OPTIONS);
+    } else {
+      console.log(`[playwright] Reusing shared browser context`);
+    }
+  } catch (e) {
+    console.log('[playwright] Error accessing sharedContext, creating new one', e);
+    sharedContext = await b.newContext(CONTEXT_OPTIONS);
+  }
+
+  const context = sharedContext as BrowserContext;
+
+  // Create a new tab/page in the shared context
   const page = await context.newPage();
   
   const session: BrowserSession = {
@@ -114,7 +193,69 @@ export async function getOrCreateSession(sessionId: string = "default"): Promise
  * @returns Playwright Page instance
  */
 export async function getSessionPage(sessionId: string = "default"): Promise<Page> {
+  // Enforce strict invariants and provide diagnostic logs
+  console.log(`[playwright] getSessionPage START — session=${sessionId}`);
   const session = await getOrCreateSession(sessionId);
+
+  // Diagnostic snapshot
+  const browserAlive = !!browser && (typeof (browser as any).isConnected !== "function" || (browser as any).isConnected());
+  const contextAlive = !!session.context && !((session.context as any).isClosed && (session.context as any).isClosed());
+  const pageExists = !!session.page;
+  const pageClosed = pageExists && session.page.isClosed ? session.page.isClosed() : false;
+  console.log(`[playwright] diagnostics — browserAlive=${browserAlive} contextAlive=${contextAlive} pageExists=${pageExists} pageClosed=${pageClosed}`);
+
+  // Ensure browser exists and is connected
+  if (!browserAlive) {
+    console.log("[playwright] Browser missing or disconnected — recreating browser and shared context");
+    const b = await getBrowser();
+    // recreate sharedContext if missing
+    if (!sharedContext || ((sharedContext as any).isClosed && (sharedContext as any).isClosed())) {
+      sharedContext = await b.newContext(CONTEXT_OPTIONS);
+      console.log("[playwright] Shared context recreated after browser relaunch");
+    }
+    session.context = sharedContext as BrowserContext;
+  }
+
+  // Ensure context exists and is live
+  if (!session.context || ((session.context as any).isClosed && (session.context as any).isClosed())) {
+    console.log(`[playwright] Session ${sessionId} has no live context — attaching sharedContext or creating new one`);
+    const b = await getBrowser();
+    if (!sharedContext || ((sharedContext as any).isClosed && (sharedContext as any).isClosed())) {
+      sharedContext = await b.newContext(CONTEXT_OPTIONS);
+      console.log(`[playwright] created new sharedContext for session ${sessionId}`);
+    }
+    session.context = sharedContext as BrowserContext;
+  }
+
+  // If page missing or closed or its context appears closed, create a new page in same context
+  try {
+    const pageNowExists = !!session.page;
+    const pageNowClosed = pageNowExists && session.page.isClosed ? session.page.isClosed() : false;
+    const pageCtx = pageNowExists ? session.page.context() : session.context;
+    const pageCtxClosed = pageCtx && (pageCtx as any).isClosed ? (pageCtx as any).isClosed() : false;
+
+    if (!pageNowExists || pageNowClosed || pageCtxClosed) {
+      if (pageNowExists && pageNowClosed) console.log(`[playwright] session ${sessionId} had closed page — creating new tab`);
+      if (pageCtxClosed) console.log(`[playwright] session ${sessionId} had page/context closed — recreating page in shared context`);
+
+      // create new page in session.context (which should be live now)
+      session.page = await (session.context as BrowserContext).newPage();
+      session.lastActivity = Date.now();
+      session.state = "active";
+      console.log(`[playwright] getSessionPage CREATED new page for session=${sessionId}`);
+      return session.page;
+    }
+  } catch (e) {
+    console.log(`[playwright] Error validating/creating page for session ${sessionId}, resetting session`, e);
+    await resetSession(sessionId);
+    const recreated = await getOrCreateSession(sessionId);
+    return recreated.page;
+  }
+
+  // All good, reuse existing page
+  session.lastActivity = Date.now();
+  session.state = "active";
+  console.log(`[playwright] getSessionPage REUSE existing page for session=${sessionId}`);
   return session.page;
 }
 
@@ -131,21 +272,38 @@ export async function getMostRecentSessionPage(): Promise<{ page: Page; sessionI
   let best: BrowserSession | null = null;
 
   for (const session of sessions.values()) {
-    if (session.state !== "closed") {
-      if (!best || session.lastActivity > best.lastActivity) {
-        best = session;
+    if (session.state === "closed") continue;
+
+    // Skip sessions whose page was closed and clean them up
+    try {
+      const pageClosed = session.page?.isClosed ? session.page.isClosed() : false;
+      console.log(`[playwright] getMostRecentSessionPage check — session=${session.id} page.isClosed=${pageClosed}`);
+      if (pageClosed) {
+        console.log(`[playwright] Found closed page for session ${session.id}, resetting session`);
+        await resetSession(session.id);
+        continue;
       }
+    } catch (e) {
+      console.log(`[playwright] Error inspecting session ${session.id}, cleaning up`, e);
+      await resetSession(session.id);
+      continue;
+    }
+
+    if (!best || session.lastActivity > best.lastActivity) {
+      best = session;
     }
   }
 
   if (best) {
     best.lastActivity = Date.now();
     best.state = "active";
+    console.log(`[playwright] getMostRecentSessionPage: returning page from session ${best.id}`);
     return { page: best.page, sessionId: best.id };
   }
 
-  // No existing session — create a default one
+  // No existing healthy session — create a default one
   const session = await getOrCreateSession("default");
+  console.log(`[playwright] getMostRecentSessionPage: created default session`);
   return { page: session.page, sessionId: "default" };
 }
 
@@ -178,8 +336,12 @@ export async function resetSession(sessionId: string = "default"): Promise<void>
   session.state = "closed";
   
   try {
-    await session.page.close().catch(() => {});
-    await session.context.close().catch(() => {});
+    // Close only the page/tab for this session. Do NOT close the shared context here
+    if (session.page && !session.page.isClosed()) {
+      await session.page.close().catch(() => {});
+      console.log(`[playwright] Closed page for session: ${sessionId}`);
+    }
+    // Do not close session.context because contexts are shared; they'll be closed by cleanupAll
   } catch {
     // Ignore errors during cleanup
   }
@@ -208,10 +370,11 @@ export async function cleanupIdleSessions(maxIdleMs: number = IDLE_TIMEOUT_MS): 
     }
   }
   
-  // If no sessions left, close the browser
-  if (sessions.size === 0 && browser) {
-    console.log("[playwright] No active sessions, closing browser");
-    await cleanupAll();
+  // If no sessions left, DO NOT automatically close the browser here.
+  // Closing the browser aggressively can lead to "page.context or browser closed" errors
+  // for subsequent tool calls. Keep browser/context available for reuse.
+  if (sessions.size === 0) {
+    console.log("[playwright] No active sessions remaining — leaving browser/context running for reuse");
   }
   
   return cleanedUp;
@@ -230,6 +393,15 @@ export async function cleanupAll(): Promise<void> {
     await resetSession(sessionId);
   }
   
+  // Close shared context if present
+  if (sharedContext) {
+    try {
+      await sharedContext.close();
+    } catch {}
+    sharedContext = null;
+    console.log("[playwright] Shared context closed during cleanupAll");
+  }
+
   // Close browser
   if (browser) {
     try {
@@ -238,6 +410,7 @@ export async function cleanupAll(): Promise<void> {
       // Ignore errors
     }
     browser = null;
+    console.log("[playwright] Browser closed during cleanupAll");
   }
   
   console.log("[playwright] Cleanup complete");

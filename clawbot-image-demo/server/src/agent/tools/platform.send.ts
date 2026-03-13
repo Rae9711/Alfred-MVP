@@ -54,13 +54,16 @@ registerTool({
       createdAt: new Date().toISOString(),
     };
 
-    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf-8");
+      fs.mkdirSync(ctx.outboxDir, { recursive: true });
+      fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf-8");
 
-    return {
-      sent: true,
-      messageId,
-      artifact: filePath,
-      recipientName,
+      console.log(`[platform.send] Message to ${recipientName} (${platform}): "${message.slice(0, 50)}…"`);
+
+      return {
+        sent: true,
+        messageId,
+        artifact: filePath,
+        recipientName,
       platform,
     };
   },

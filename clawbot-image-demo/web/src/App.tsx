@@ -888,10 +888,14 @@ function MainScreen({
     
     let finalPrompt = nextPrompt;
     
-    // Include conversation history for context
-    if (currentConversation && currentConversation.messages.length > 0) {
+    // Only include conversation history for short follow-up prompts (≤8 words).
+    // Long self-contained prompts (e.g. "Open Gmail and compose a draft email...") should
+    // NOT have history prepended — it confuses the planner and pollutes the plan display.
+    const wordCount = nextPrompt.trim().split(/\s+/).length;
+    const isFollowUp = wordCount <= 8;
+    if (isFollowUp && currentConversation && currentConversation.messages.length > 0) {
       const historyContext = currentConversation.messages
-        .slice(-6)
+        .slice(-4)
         .map(m => `${m.role === "user" ? "用户" : "助手"}: ${m.content}`)
         .join("\n\n");
       finalPrompt = `[对话历史]\n${historyContext}\n\n[当前请求]\n${nextPrompt}`;

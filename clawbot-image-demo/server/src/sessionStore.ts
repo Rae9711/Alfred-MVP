@@ -101,7 +101,7 @@ export function getActionMode(sessionId: string): ActionMode {
 
 export function setClarificationContext(
   sessionId: string,
-  ctx: { originalPrompt: string; plannerInstruction?: string },
+  ctx: { originalPrompt: string; plannerInstruction?: string; saveAs?: string; clarifyStepId?: string },
 ) {
   const s = getSession(sessionId);
   s.clarificationContext = ctx;

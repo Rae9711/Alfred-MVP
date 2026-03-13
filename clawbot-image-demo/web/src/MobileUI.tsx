@@ -1575,10 +1575,12 @@ export function MobileMainScreen({
 
     let finalPrompt = nextPrompt;
     
-    // Include conversation history for context (if exists)
-    if (currentConversation && currentConversation.messages.length > 0) {
+    // Only include conversation history for short follow-up prompts (≤8 words).
+    const wordCount = nextPrompt.trim().split(/\s+/).length;
+    const isFollowUp = wordCount <= 8;
+    if (isFollowUp && currentConversation && currentConversation.messages.length > 0) {
       const historyContext = currentConversation.messages
-        .slice(-6) // Last 6 messages for context
+        .slice(-4)
         .map(m => `${m.role === "user" ? "用户" : "助手"}: ${m.content}`)
         .join("\n\n");
       finalPrompt = `[对话历史]\n${historyContext}\n\n[当前请求]\n${nextPrompt}`;

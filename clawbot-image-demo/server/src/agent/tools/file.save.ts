@@ -28,9 +28,11 @@ registerTool({
     const basename = (args.filename ?? "output").replace(/[^a-zA-Z0-9_\-\u4e00-\u9fff]/g, "_");
     const filename = basename.endsWith(`.${format}`) ? basename : `${basename}.${format}`;
 
-    const filePath = path.join(ctx.outboxDir, filename);
-    fs.writeFileSync(filePath, content, "utf-8");
+      const filePath = path.join(ctx.outboxDir, filename);
+      // Ensure outbox directory exists
+      fs.mkdirSync(ctx.outboxDir, { recursive: true });
+      fs.writeFileSync(filePath, content, "utf-8");
 
-    return { filePath };
+      return { filePath };
   },
 });

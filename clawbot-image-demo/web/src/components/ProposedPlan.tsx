@@ -12,6 +12,7 @@ const PERMISSION_LABELS: Record<string, string> = {
   "reminders.write": "管理待办事项",
   "files.read": "读取已上传的文件",
   "browser.control": "控制浏览器（打开网页、搜索）",
+  "app.open": "在本机打开桌面应用",
 };
 
 // ── tool display names & icons ───────────────────────────
@@ -34,6 +35,7 @@ const TOOL_INFO: Record<string, { icon: string; label: string }> = {
   "file.save": { icon: "\uD83D\uDCBE", label: "保存文件" },
   "flights.search": { icon: "\u2708\uFE0F", label: "航班搜索" },
   "browser.search_flights": { icon: "\u2708\uFE0F\uD83D\uDCBB", label: "浏览器搜索航班" },
+  "app.open": { icon: "\uD83D\uDCF1", label: "打开本地应用" },
 };
 
 // ── component ────────────────────────────────────────────

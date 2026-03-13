@@ -12,7 +12,10 @@ import { extractPage } from "./tasks/extractPage.js";
 import { clickLinkByText } from "./tasks/clickLinkByText.js";
 import { fillInputTool } from './tasks/fillInput.js';
 import { composeGmailDraft } from './tasks/composeGmailDraft.js';
+import { resumeGmailAfterLogin } from './tasks/resumeGmailAfterLogin.js';
 import { chatgptPrompt } from './tasks/chatgptPrompt.js';
+import { readGmail } from './tasks/readGmail.js';
+import { manageCalendar } from './tasks/manageCalendar.js';
 
 const BROWSER_TOOLS = new Set([
   "browser.search_flights",
@@ -22,11 +25,10 @@ const BROWSER_TOOLS = new Set([
   "browser.click_link_by_text",
   "browser.fill_input",
   "browser.compose_gmail_draft",
+  "browser.read_gmail",
+  "browser.manage_calendar",
+  "browser.resume_gmail_after_login",
   "browser.submit_chatgpt_prompt",
-  // "browser.click",
-  // "browser.extract_text",
-  // "browser.wait_for",
-  // "browser.screenshot",
 ]);
 
 /**
@@ -83,8 +85,20 @@ export async function executeBrowserTool(
         result = await composeGmailDraft(args as any);
         break;
 
+      case "browser.resume_gmail_after_login":
+        result = await resumeGmailAfterLogin(args as any);
+        break;
+
       case "browser.submit_chatgpt_prompt":
         result = await chatgptPrompt(args as any);
+        break;
+
+      case "browser.read_gmail":
+        result = await readGmail(args as any);
+        break;
+
+      case "browser.manage_calendar":
+        result = await manageCalendar(args as any);
         break;
 
       default:

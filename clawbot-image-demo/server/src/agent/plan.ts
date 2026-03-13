@@ -256,6 +256,9 @@ const TOOL_SAVE_AS: Record<string, string> = {
   "text.generate": "msg",
   "image.generate": "image",
   "web.search": "search",
+  "browser.search_web": "search",
+  "browser.read_gmail": "emails",
+  "browser.manage_calendar": "calendar",
   "email.read": "emails",
   "pdf.process": "pdf",
   "calendar.manage": "calendar",
@@ -278,8 +281,137 @@ function isFlightRequest(prompt: string): boolean {
   return /(search\s+flights?|\bflight\b|\bflights\b|google\s*flights|航班|机票|from\s+.+\s+to\s+.+)/i.test(t);
 }
 
+// ── Desktop app opening ───────────────────────────────────────────────────────
+// Known native macOS app names (excludes browser-only sites like Gmail/ChatGPT)
+// Add common Chinese aliases like 短信/信息 to ensure "打开 短信" maps to Messages
+const APP_OPEN_KNOWN_NAMES =
+  /wechat|微信|weixin|\b短信\b|\b信息\b|\b短讯\b|\bvscode\b|visual studio code|\bfigma\b|\bslack\b|\bzoom\b|spotify|discord|telegram|whatsapp|\bfinder\b|\bterminal\b|\biterm\b|cursor|\bxcode\b|\bsafari\b|firefox|\bchrome\b|google chrome|notion|obsidian|\blinear\b|\bwarp\b|sketch|\barc\b|\bbrave\b|\bvlc\b/i;
+
+const APP_NAME_ALIASES: Record<string, string> = {
+  wechat: "WeChat", "微信": "WeChat", weixin: "WeChat",
+  vscode: "Visual Studio Code", "vs code": "Visual Studio Code",
+  "visual studio code": "Visual Studio Code", code: "Visual Studio Code",
+  chrome: "Google Chrome", "google chrome": "Google Chrome",
+  figma: "Figma", slack: "Slack", zoom: "zoom.us", "zoom.us": "zoom.us",
+  spotify: "Spotify", terminal: "Terminal", safari: "Safari",
+  discord: "Discord", telegram: "Telegram", whatsapp: "WhatsApp",
+  notion: "Notion", finder: "Finder", cursor: "Cursor",
+  iterm: "iTerm", iterm2: "iTerm", warp: "Warp", xcode: "Xcode",
+  firefox: "Firefox", arc: "Arc", brave: "Brave Browser", sketch: "Sketch",
+  vlc: "VLC", obsidian: "Obsidian", linear: "Linear",
+  // Chinese aliases for messaging apps
+  短信: "Messages", 信息: "Messages", "短讯": "Messages",
+};
+
+function isOpenAppRequest(prompt: string): boolean {
+  const t = extractCurrentRequest(prompt);
+  if (!APP_OPEN_KNOWN_NAMES.test(t)) return false;
+  return /\b(open|launch|start|run|打开|启动)\s/i.test(t);
+}
+
+function inferOpenAppStep(prompt: string): PlanStep {
+  const t = extractCurrentRequest(prompt);
+  const m =
+    t.match(/\b(?:open|launch|start|run)\s+(?:the\s+|app\s+)?(?:app\s+)?(.+?)(?:\s+app\b|\s*$)/i) ??
+    t.match(/(?:打开|启动)\s*(.+)/);
+  const rawName = (m?.[1] ?? t).trim().replace(/[.!?,]+$/, "").trim();
+  const normalized = rawName.toLowerCase().replace(/\s+/g, " ");
+  const appName = APP_NAME_ALIASES[normalized] ?? rawName;
+  return {
+    id: "s1",
+    tool: "app.open",
+    description: `在本机打开 ${appName}`,
+    args: { name: appName },
+    saveAs: "app",
+  };
+}
+
+// ── Read Gmail ─────────────────────────────────────────────────────────────
+function isReadGmailRequest(prompt: string): boolean {
+  const t = extractCurrentRequest(prompt);
+  return /(check|read|view|open|show|get)\s+(my\s+)?(?:latest|recent|recently|new)?\s*(email|emails|gmail|inbox|mail)/i.test(t) ||
+    /查看(\s*(我的|最新|最近)\s*)?\s*(邮件|收件箱|gmail)/i.test(t) ||
+    /读(\s*(我的|最新|最近)\s*)?\s*(邮件|gmail)/i.test(t) ||
+    /查看收件箱|读一下我的邮件|查看我的最新邮件/i.test(t);
+}
+
+function inferReadGmailStep(prompt: string): PlanStep {
+  const t = extractCurrentRequest(prompt);
+  const countMatch = t.match(/(\d+)\s*(emails?|封)/i);
+  const queryMatch = t.match(/from[:\s]+([^\s]+)|subject[:\s]+["']?([^"'\n]+?)["']?(?:\s|$)/i);
+  return {
+    id: "s1",
+    tool: "browser.read_gmail",
+    description: "读取 Gmail 收件箱",
+    args: {
+      count: countMatch ? parseInt(countMatch[1]) : 5,
+      ...(queryMatch ? { query: queryMatch[0] } : {}),
+    },
+    saveAs: "emails",
+  };
+}
+
+// ── Manage Calendar ────────────────────────────────────────────────────────
+function isManageCalendarRequest(prompt: string): boolean {
+  const t = extractCurrentRequest(prompt);
+  return /(add|create|schedule|set\s+up)\s+.{0,30}(event|meeting|appointment|calendar)/i.test(t) ||
+    /(calendar|日历|日程).{0,20}(add|create|schedule|新建|创建|添加)/i.test(t) ||
+    /add\s+.{0,30}to\s+(my\s+)?calendar/i.test(t) ||
+    /(添加|创建|新建|安排).{0,10}(日历|日程|事件|会议)/i.test(t);
+}
+
+function inferManageCalendarStep(prompt: string): PlanStep {
+  const t = extractCurrentRequest(prompt);
+  const titleMatch =
+    t.match(/(?:add|create|schedule)\s+(.+?)\s+(?:on|at|for|to\s+calendar)/i) ??
+    t.match(/(?:添加|创建|安排)\s*(.+?)\s*(?:到日历|日历|日程)/i);
+  const dateMatch = t.match(/on\s+([A-Za-z0-9]+(?:\s+[A-Za-z0-9]+)?)/i);
+  const timeMatch = t.match(/at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i);
+  return {
+    id: "s1",
+    tool: "browser.manage_calendar",
+    description: "在 Google Calendar 创建日历事件",
+    args: {
+      action: "create",
+      title: titleMatch?.[1]?.trim() ?? "",
+      ...(dateMatch ? { date: dateMatch[1] } : {}),
+      ...(timeMatch ? { time: timeMatch[1] } : {}),
+    },
+    saveAs: "calendar",
+  };
+}
+
+function isComposeGmailDraftRequest(prompt: string): boolean {
+  const t = extractCurrentRequest(prompt);
+  return /open\s+gmail\s+and\s+(compose|draft|write)/i.test(t) ||
+    /(compose|draft|write)\s+.{0,30}(email|mail|gmail)/i.test(t) ||
+    /(email|mail|gmail)\s+.{0,30}(compose|draft|write)/i.test(t) ||
+    /(帮我|写|撰写|起草|草稿).{0,10}(邮件|gmail)/i.test(t);
+}
+
+function inferComposeGmailDraftStep(prompt: string): PlanStep {
+  const t = extractCurrentRequest(prompt);
+  const toMatch = t.match(/to\s+([\w.+%-]+@[\w.-]+)/i);
+  const subjectMatch = t.match(/subject[:\s]+["']?([^"'\n]{1,80}?)["']?(?:\s+and\b|\s+body\b|$)/i);
+  const bodyMatch = t.match(/body[:\s]+["']([^"']+)["']/i) ||
+    t.match(/body[:\s]+\u201c([^\u201d]+)\u201d/i);
+  return {
+    id: "s1",
+    tool: "browser.compose_gmail_draft",
+    description: "撰写 Gmail 草稿",
+    args: {
+      to: toMatch?.[1] ?? "",
+      subject: subjectMatch?.[1]?.trim() ?? "",
+      body: bodyMatch?.[1] ?? "",
+    },
+    saveAs: "draft",
+  };
+}
+
 function isOpenPageRequest(prompt: string): boolean {
   const t = extractCurrentRequest(prompt);
+  // Don't match compound "Open X and compose/draft/write/fill" — those are multi-step requests
+  if (/\bopen\s+(gmail|chatgpt|openai|amazon)\s+and\s+(compose|draft|write|fill|search|type|send)/i.test(t)) return false;
   return /\bopen\s+(gmail|chatgpt|openai|amazon|https?:\/\/\S+)\b/i.test(t) ||
     /\b(navigate|go)\s+to\s+(gmail|chatgpt|openai|amazon|https?:\/\/\S+)\b/i.test(t) ||
     /(打开|访问)\s*(gmail|chatgpt|openai|amazon)/i.test(t);
@@ -544,16 +676,20 @@ CRITICAL RULES:
 3. If the user already provides a direct address (phone/email/wxid) or a WeChat system name (文件传输助手/filehelper), send directly without contact lookup.
 4. If no direct address is provided, FIRST look up the contact, THEN send. For WeChat, the recipient can be a name — wechat.send will resolve it.
 5. Each step needs: id, tool, description (Chinese), args. saveAs must be a plain name like "contact".
-6. For email operations: use email.send to send, email.read to search/read inbox.
-7. For calendar: use calendar.manage with action "create"/"list"/"update"/"delete". Use symbolic dates like "TODAY", "TOMORROW", "TODAY_15:00", "TOMORROW_20:00", or ISO dates like "${currentDateStr}T15:00:00Z".
+6. For email operations: use browser.compose_gmail_draft to compose/draft/send emails (opens Gmail in browser), browser.read_gmail to read/search inbox (scrapes Gmail UI). Do NOT use email.send or email.read (deprecated API tools).
+7. For calendar: use browser.manage_calendar with action "create"/"list". Opens Google Calendar UI directly — do NOT use calendar.manage (deprecated API tool). Use date YYYY-MM-DD and optional time HH:MM.
 8. For reminders/tasks: use reminders.manage with action "create"/"complete"/"list"/"delete". Use "TODAY", "TOMORROW", or ISO date for due_date.
-9. For web searches (NOT including flights): use web.search. After searching, add a text.generate step to format results if user wants a summary.
+9. For web searches (NOT including flights): use browser.search_web. This opens a real browser on the user's machine to search the web and returns live results. Do NOT use web.search (deprecated API tool).
 10. For PDF documents: use pdf.process with action "extract_text"/"summarize"/"answer_question". If the user message contains "[Attached file: FILENAME]", use that FILENAME as the file_id in pdf.process args.
 11. For compound requests (e.g. "schedule dinner and send him a message"), create multiple steps in one plan.
 12. For FLIGHT SEARCHES (e.g. "搜航班", "search flights", "New York to Detroit", "机票"): ALWAYS use browser.search_flights. This tool opens a real browser on the user's machine to search Google Flights and returns live results. Do NOT use web.search or flights.search for flight queries.
-13. For OPEN PAGE requests (e.g. "Open Gmail", "Open ChatGPT", "Open Amazon", "Open OpenAI", "打开谷歌", "go to openai.com"): ALWAYS use browser.open_page. Use built-in mappings: gmail→https://mail.google.com, chatgpt→https://chatgpt.com, openai→https://openai.com, amazon→https://www.amazon.com. If the user provides a full URL, use it directly.
+13. For requests that OPEN or LAUNCH local desktop applications (e.g. "打开 微信", "打开 VSCode", "打开 短信"): ALWAYS use app.open with the canonical application name. Use the alias map when normalizing names (examples: 微信→WeChat, 短信/信息→Messages, VSCode/VS Code→Visual Studio Code, Figma→Figma). Only use browser.open_page for website targets like ChatGPT, Google, GitHub, or explicit URLs.
+14. For OPEN PAGE requests (e.g. "Open Gmail", "Open ChatGPT", "Open Amazon", "Open OpenAI", "打开谷歌", "go to openai.com"): ALWAYS use browser.open_page. Use built-in mappings: gmail→https://mail.google.com, chatgpt→https://chatgpt.com, openai→https://openai.com, amazon→https://www.amazon.com. If the user provides a full URL, use it directly.
 14. For WEB SEARCH requests (e.g. "Search Ann Arbor weather", "Search best coffee shops", "Look up OpenAI blog", "查找最新消息", "搜索天气"): ALWAYS use browser.search_web. Use the user's query as the "query" arg. Strip leading verbs like "Search", "Look up", "搜索" from the query. Do NOT use web.search for these — browser.search_web opens a real browser.
 15. For PAGE EXTRACT / SUMMARIZE requests (e.g. "summarize this page", "summarize the current page", "what does this page say", "extract page content", "总结这个页面", "这页说了什么"): ALWAYS use browser.extract_page with args {"mode":"current_page"}. This reads whatever page is currently open in the browser — no URL needed.
+16. For READ EMAIL / INBOX requests (e.g. "check my email", "read gmail", "查看邮件", "read my inbox"): ALWAYS use browser.read_gmail. Do NOT use email.read (deprecated).
+17. For CALENDAR CREATE requests (e.g. "add meeting to calendar", "schedule event", "创建日历事件"): ALWAYS use browser.manage_calendar with action "create". Do NOT use calendar.manage (deprecated).
+18. For COMPOSE / SEND EMAIL requests (e.g. "draft email", "compose gmail", "write email to X", "帮我写邮件"): ALWAYS use browser.compose_gmail_draft. Do NOT use email.send (deprecated).
 
 CLARIFICATION RULES:
 - If the request is MISSING the recipient (who to send to), you MUST clarify.
@@ -568,23 +704,30 @@ Example A — direct message "给查理说明天开会":
 Example B — compose + send "帮我写个生日祝福发给查理":
 {"intent":"写生日祝福发给查理","steps":[{"id":"s1","tool":"text.generate","description":"生成祝福","args":{"prompt":"写一段简短的生日祝福语"},"saveAs":"msg"},{"id":"s2","tool":"${contactTool}","description":"查找查理","args":{${contactArgs.replace("PERSON_NAME", "查理")}},"saveAs":"contact"},{"id":"s3","tool":"${sendTool}","description":"发送消息","args":{${sendArgs.replace("THE_MESSAGE", "{{vars.msg.text}}")}},"dependsOn":["s1","s2"]}]}
 
-Example C — direct address "给 ruiraywang97@gmail.com 发邮件说hello":
-{"intent":"发送邮件","steps":[{"id":"s1","tool":"email.send","description":"发送邮件","args":{"to":"ruiraywang97@gmail.com","subject":"Hello","body":"Hello"}}]}
+Example C — compose email "给 ruiraywang97@gmail.com 发邮件说hello":
+{"intent":"撰写邮件","steps":[{"id":"s1","tool":"browser.compose_gmail_draft","description":"撰写Gmail草稿","args":{"to":"ruiraywang97@gmail.com","subject":"Hello","body":"Hello"}}]}
+
+Example Z — research + summarize + draft email "Find flights, summarize options, and draft an email":
+{"intent":"研究并起草邮件","steps":[
+  {"id":"s1","tool":"browser.search_flights","description":"搜索航班","args":{"origin":"ORIGIN","destination":"DESTINATION","date":"YYYY-MM-DD"},"saveAs":"flights"},
+  {"id":"s2","tool":"text.generate","description":"总结航班选项","args":{"prompt":"Summarize the flight options from {{vars.flights}} into 3 concise bullet points."},"saveAs":"flight_summary"},
+  {"id":"s3","tool":"browser.compose_gmail_draft","description":"撰写Gmail草稿","args":{"to":"","subject":"Travel plans","body":"{{vars.flight_summary.text}}"},"saveAs":"draft"}
+]}
 
 Example D — vague request needing clarification "帮我发个消息给朋友约晚饭":
 {"intent":"需要澄清","steps":[{"id":"s1","tool":"clarify","description":"询问详情","args":{"question":"好的！我需要确认几个细节：\n1. 发给哪位朋友？\n2. 哪天的晚饭？\n3. 有没有时间和地点偏好？"}}]}
 
 Example E — search "搜索一下最近的AI新闻":
-{"intent":"搜索AI新闻","steps":[{"id":"s1","tool":"web.search","description":"搜索AI新闻","args":{"query":"latest AI news 2026"},"saveAs":"search"},{"id":"s2","tool":"text.generate","description":"整理搜索结果","args":{"prompt":"请根据以下搜索结果，用中文整理出一份简洁的新闻摘要：\n\n{{vars.search.results}}"},"dependsOn":["s1"]}]}
+{"intent":"搜索AI新闻","steps":[{"id":"s1","tool":"browser.search_web","description":"搜索AI新闻","args":{"query":"latest AI news 2026"},"saveAs":"search"}]}
 
 Example F — calendar "下周五晚上8点和Adam吃饭":
-{"intent":"创建日历事件并发消息","steps":[{"id":"s1","tool":"calendar.manage","description":"创建晚餐日历事件","args":{"action":"create","title":"和Adam吃晚饭","start":"2026-03-13T20:00:00Z","end":"2026-03-13T21:30:00Z"},"saveAs":"calendar"},{"id":"s2","tool":"${contactTool}","description":"查找Adam","args":{${contactArgs.replace("PERSON_NAME", "Adam")}},"saveAs":"contact"},{"id":"s3","tool":"${sendTool}","description":"发送消息给Adam","args":{${sendArgs.replace("THE_MESSAGE", "Hey! 下周五晚上8点一起吃晚饭怎么样？")}},"dependsOn":["s1","s2"]}]}
+{"intent":"创建日历事件并发消息","steps":[{"id":"s1","tool":"browser.manage_calendar","description":"在Google Calendar创建晚餐事件","args":{"action":"create","title":"和Adam吃晚饭","date":"2026-03-13","time":"20:00"},"saveAs":"calendar"},{"id":"s2","tool":"${contactTool}","description":"查找Adam","args":{${contactArgs.replace("PERSON_NAME", "Adam")}},"saveAs":"contact"},{"id":"s3","tool":"${sendTool}","description":"发送消息给Adam","args":{${sendArgs.replace("THE_MESSAGE", "Hey! 下周五晚上8点一起吃晚饭怎么样？")}},"dependsOn":["s1","s2"]}]}
 
 Example G — reminder "提醒我明天给妈妈打电话":
 {"intent":"创建提醒","steps":[{"id":"s1","tool":"reminders.manage","description":"创建提醒任务","args":{"action":"create","title":"给妈妈打电话","due_date":"TOMORROW"},"saveAs":"reminder"}]}
 
-Example H — email "查看我的邮件":
-{"intent":"查看邮件","steps":[{"id":"s1","tool":"email.read","description":"读取最新邮件","args":{"count":5},"saveAs":"emails"}]}
+Example H — read email "查看我的邮件":
+{"intent":"查看邮件","steps":[{"id":"s1","tool":"browser.read_gmail","description":"读取Gmail收件箱","args":{"count":5},"saveAs":"emails"}]}
 
 Example I — clear request, NO clarification needed "Text Adam to plan dinner Friday 8pm at Five Guys":
 {"intent":"给Adam发消息约饭","steps":[{"id":"s1","tool":"${contactTool}","description":"查找Adam","args":{${contactArgs.replace("PERSON_NAME", "Adam")}},"saveAs":"contact"},{"id":"s2","tool":"${sendTool}","description":"发送晚餐邀请","args":{${sendArgs.replace("THE_MESSAGE", "Hey Adam, want to grab dinner at Five Guys this Friday at 8pm?")}},"dependsOn":["s1"]}]}
@@ -607,6 +750,12 @@ Example N — web search "Search Ann Arbor weather":
 Example O — page summarize "Summarize the current page":
 {"intent":"总结页面","steps":[{"id":"s1","tool":"browser.extract_page","description":"提取当前页面内容","args":{"mode":"current_page"},"saveAs":"page"}]}
 
+Example P — read email "Check my email":
+{"intent":"读取邮件","steps":[{"id":"s1","tool":"browser.read_gmail","description":"读取Gmail收件箱","args":{"count":5},"saveAs":"emails"}]}
+
+Example Q — calendar "Add team meeting on March 20 at 2pm":
+{"intent":"创建日历事件","steps":[{"id":"s1","tool":"browser.manage_calendar","description":"在Google Calendar创建会议","args":{"action":"create","title":"Team Meeting","date":"2026-03-20","time":"14:00"},"saveAs":"calendar"}]}
+
 User: ${prompt}
 `.trim();
 
@@ -625,6 +774,131 @@ User: ${prompt}
         intent = "搜索航班";
         requiredPermissions = ["browser.control"];
         console.log("[createPlan] planner selected browser.search_flights (deterministic override)");
+      }
+    }
+  }
+
+  // Deterministic safeguard: desktop app open requests → app.open
+  // Must run BEFORE isOpenPageRequest so "Open Chrome" → app.open, not browser.open_page
+  if (isOpenAppRequest(prompt)) {
+    const hasAppOpen = steps.some((s) => s.tool === "app.open");
+    if (!hasAppOpen) {
+      const inferredStep = inferOpenAppStep(prompt);
+      steps = [inferredStep];
+      intent = "打开桌面应用";
+      requiredPermissions = ["app.open"];
+      console.log("[createPlan] planner selected app.open (deterministic override)");
+    }
+  }
+
+  // Deterministic safeguard: Gmail draft requests must use browser.compose_gmail_draft.
+  // Check BEFORE isOpenPageRequest so "Open Gmail and compose..." isn't stolen by open_page.
+  // Special-case: compound workflow pattern detection — research/summarize/draft
+  // If the user asks to find flights AND summarize AND draft an email, build
+  // an explicit multi-step plan: search_flights -> text.generate(summary) -> compose_gmail_draft.
+  // This ensures the compose step does not swallow earlier research steps.
+  const isFlightResearchAndDraft = /\b(flight|flights)\b/i.test(prompt) && /summariz/i.test(prompt) && /\b(draft|email|compose|send)\b/i.test(prompt);
+  if (isFlightResearchAndDraft) {
+    let flightStep = inferFlightStepFromPrompt(prompt, now) || inferSearchWebStepFromPrompt(prompt);
+    // If we couldn't infer a structured flight search, try to build a browser.search_flights step
+    if (!flightStep || flightStep.tool !== "browser.search_flights") {
+      const destMatch = prompt.match(/trip to\s+([A-Za-z ]{3,40})/i) || prompt.match(/to\s+([A-Za-z ]{3,40})/i);
+      let guessedDestRaw = destMatch ? destMatch[1].trim() : (prompt.match(/detroit/i) ? "Detroit" : undefined);
+      // Strip temporal words accidentally captured (e.g., "Detroit tomorrow" → "Detroit")
+      let guessedDest = guessedDestRaw ? guessedDestRaw.replace(/\b(tomorrow|today|tonight|on|at|next|this)\b/gi, "").trim() : undefined;
+      const guessedDate = /tomorrow/i.test(prompt) ? new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10) : undefined;
+      if (guessedDest || guessedDate) {
+        flightStep = {
+          id: "s1",
+          tool: "browser.search_flights",
+          description: "搜索航班",
+          args: {
+            origin: "", // origin unknown — will require clarification
+            ...(guessedDest ? { destination: guessedDest } : {}),
+            ...(guessedDate ? { date: guessedDate } : {}),
+          },
+          saveAs: "flights",
+        } as PlanStep;
+      }
+    }
+    const summaryStep: PlanStep = {
+      id: "s2",
+      tool: "text.generate",
+      description: "总结航班选项",
+      args: { prompt: "Summarize the flight options in {{vars.flights}} into 3 concise bullet points." },
+      saveAs: "flight_summary",
+    };
+
+    const needsClarifyRecipient = /\bmy team\b|\bteam\b/i.test(prompt);
+    const composeArgs: Record<string, any> = { to: needsClarifyRecipient ? "" : "", subject: "Travel plans", body: "{{vars.flight_summary.text}}" };
+
+    const composeStep: PlanStep = {
+      id: "s3",
+      tool: "browser.compose_gmail_draft",
+      description: "撰写 Gmail 草稿",
+      args: composeArgs,
+      saveAs: "draft",
+    };
+
+    const compoundSteps: PlanStep[] = [];
+    // If origin is missing or empty, ask clarify before running flight search
+    const originMissing = !flightStep || !flightStep.args || !flightStep.args.origin || String(flightStep.args.origin).trim() === "";
+    if (originMissing) {
+      // Ask for origin and save it as vars.origin
+      compoundSteps.push({ id: "s1", tool: "clarify", description: "询问出发地", args: { question: "请问：您从哪个城市/机场出发？", saveAs: "origin" }, saveAs: "origin" } as any);
+      // flight search becomes s2 and uses vars.origin
+      if (flightStep) {
+        compoundSteps.push({ ...flightStep, id: "s2", args: { ...flightStep.args, origin: "{{vars.origin}}" }, saveAs: "flights" });
+      }
+      // summary becomes s3
+      compoundSteps.push({ ...summaryStep, id: "s3" });
+      // recipient clarify (if needed) becomes next
+      if (needsClarifyRecipient) {
+        compoundSteps.push({ id: "s4", tool: "clarify", description: "询问收件人详情", args: { question: "请问：您要把邮件发给团队中谁？（可以回复具体人员或保留为“团队”）", saveAs: "recipient" }, saveAs: "recipient" } as any);
+        composeStep.id = "s5";
+        // Use the clarify reply as vars.recipient
+        composeStep.args = { ...composeStep.args, to: "{{vars.recipient}}" };
+        compoundSteps.push(composeStep);
+      } else {
+        composeStep.id = "s4";
+        compoundSteps.push(composeStep);
+      }
+    } else {
+      // origin present — normal ordering: search -> summary -> clarify recipient (if any) -> compose
+      compoundSteps.push({ ...flightStep, id: "s1", saveAs: "flights" });
+      compoundSteps.push({ ...summaryStep, id: "s2" });
+      if (needsClarifyRecipient) {
+        compoundSteps.push({ id: "s3", tool: "clarify", description: "询问收件人详情", args: { question: "请问：您要把邮件发给团队中谁？（可以回复具体人员或保留为“团队”）", saveAs: "recipient" }, saveAs: "recipient" } as any);
+        composeStep.id = "s4";
+        // Use the clarify reply as vars.recipient
+        composeStep.args = { ...composeStep.args, to: "{{vars.recipient}}" };
+        compoundSteps.push(composeStep);
+      } else {
+        composeStep.id = "s3";
+        compoundSteps.push(composeStep);
+      }
+    }
+
+    steps = compoundSteps;
+    intent = "研究并起草邮件";
+    requiredPermissions = ["browser.control"];
+    console.log("[createPlan] planner built compound flight->summary->compose plan (special-case)");
+  }
+
+  if (isComposeGmailDraftRequest(prompt)) {
+    // If the prompt also includes research/search/summarize/calendar/flight intents,
+    // do NOT let the compose override swallow earlier tasks.
+    const hasOtherIntent = isFlightRequest(prompt) || isOpenPageRequest(prompt) || isSearchWebRequest(prompt) || isReadGmailRequest(prompt) || isManageCalendarRequest(prompt) || isExtractPageRequest(prompt);
+    if (hasOtherIntent) {
+      console.log('[createPlan] compose_gmail_draft override skipped due to compound intent');
+    } else {
+      const hasComposeDraft = steps.some((s) => s.tool === "browser.compose_gmail_draft");
+      if (!hasComposeDraft) {
+        const inferredStep = inferComposeGmailDraftStep(prompt);
+        steps = [inferredStep];
+        intent = "撰写Gmail草稿";
+        requiredPermissions = ["browser.control"];
+        console.log("[createPlan] planner selected browser.compose_gmail_draft (deterministic override)");
       }
     }
   }
@@ -654,6 +928,28 @@ User: ${prompt}
         requiredPermissions = ["browser.control"];
         console.log("[createPlan] planner selected browser.search_web (deterministic override)");
       }
+    }
+  }
+
+  // Deterministic safeguard: read-email requests should always use browser.read_gmail.
+  if (isReadGmailRequest(prompt)) {
+    const hasReadGmail = steps.some((s) => s.tool === "browser.read_gmail");
+    if (!hasReadGmail) {
+      steps = [inferReadGmailStep(prompt)];
+      intent = "读取邮件";
+      requiredPermissions = ["browser.control"];
+      console.log("[createPlan] planner selected browser.read_gmail (deterministic override)");
+    }
+  }
+
+  // Deterministic safeguard: calendar create requests should always use browser.manage_calendar.
+  if (isManageCalendarRequest(prompt)) {
+    const hasManageCal = steps.some((s) => s.tool === "browser.manage_calendar");
+    if (!hasManageCal) {
+      steps = [inferManageCalendarStep(prompt)];
+      intent = "管理日历";
+      requiredPermissions = ["browser.control"];
+      console.log("[createPlan] planner selected browser.manage_calendar (deterministic override)");
     }
   }
 

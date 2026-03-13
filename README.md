@@ -27,26 +27,60 @@ User (Web UI) → WebSocket → Server (Express + WS)
 
 ## Features
 
-### 16 Integrated Tools
+### Computer-Use Architecture
+
+Alfred controls the browser and desktop applications directly — like a human using a computer — instead of relying on external APIs. This means no OAuth tokens, no API keys, and no rate limits for core tasks.
+
+---
+
+#### Browser Computer-Use Tools
+
+These tools run via Playwright on the user's Mac (through the Connector). Alfred opens a real browser, navigates, clicks, fills forms, and extracts results — exactly as a human would.
+
+| Tool | Description | Notes |
+|------|-------------|-------|
+| `browser.search_web` | Open a browser and perform a web search; extract top results | Replaces `web.search` API |
+| `browser.search_flights` | Open Google Flights and search for live flight results | Replaces `flights.search` API |
+| `browser.compose_gmail_draft` | Open Gmail, click Compose, fill To/Subject/Body, stop before Send | Replaces `email.send` API |
+| `browser.read_gmail` | Open Gmail inbox and extract recent emails | Replaces `email.read` API |
+| `browser.manage_calendar` | Open Google Calendar and create/view events | Replaces `calendar.manage` API |
+| `browser.open_page` | Navigate to any URL in the browser | Connector |
+| `browser.extract_page` | Extract and summarize the current open page | Connector |
+| `browser.fill_input` | Fill an input field on the current page | Connector |
+| `browser.click_link_by_text` | Click a link by its visible text | Connector |
+| `browser.submit_chatgpt_prompt` | Open ChatGPT and submit a prompt | Connector |
+
+---
+
+#### Desktop Computer-Use Tools
+
+These tools run natively on macOS via the Connector (AppleScript / JXA / `open -a`).
 
 | Tool | Description | Requires |
 |------|-------------|----------|
-| `wechat.send` | Send WeChat messages via WeCom Kefu API | WeCom credentials |
-| `contacts.apple` | Look up contacts from macOS Apple Contacts (iCloud synced) | Connector |
+| `app.open` | Open any installed macOS desktop app (WeChat, Figma, Zoom, etc.) | Connector |
+| `contacts.apple` | Look up contacts from macOS Contacts (iCloud synced) | Connector |
 | `imessage.send` | Send iMessages via macOS | Connector |
-| `sms.send` | Send SMS (stub — ready for Twilio integration) | — |
-| `email.send` | Send email via Gmail API | Google OAuth |
-| `email.read` | Read/search Gmail inbox | Google OAuth |
-| `calendar.manage` | Create/list/update/delete Google Calendar events | Google OAuth |
+| `sms.send` | Send SMS (stub — ready for Twilio) | — |
 | `reminders.manage` | Create/complete/list Apple Reminders via macOS | Connector |
-| `web.search` | Web search via Brave Search API | Brave API key |
-| `flights.search` | Search flights via Kiwi API | Kiwi API key |
-| `text.generate` | Generate text using Claude or Qwen | LLM API key |
+| `wechat.send` | Send WeChat messages via WeCom Kefu API | WeCom credentials |
+| `platform.send` | Generic platform message send (WeCom / DingTalk / Feishu) | — |
+
+---
+
+#### AI / Local Tools
+
+These tools run locally on the server — no browser or external API needed.
+
+| Tool | Description | Requires |
+|------|-------------|----------|
+| `text.generate` | Generate text (messages, summaries, translations) | LLM API key |
 | `image.generate` | Generate images | LLM API key |
-| `pdf.process` | Extract text, summarize, or answer questions about PDFs | LLM API key |
-| `file.save` | Save files to the outbox directory | — |
-| `clarify` | Ask the user for missing information before proceeding | — |
-| `platform.send` | Generic platform message send | — |
+| `pdf.process` | Extract, summarize, or answer questions about PDFs | LLM API key |
+| `file.save` | Save content to the outbox directory | — |
+| `clarify` | Ask the user for missing information | — |
+
+---
 
 ### AI Planning with Human Approval
 
@@ -75,6 +109,8 @@ Uses Tencent's official WeCom (企业微信) Customer Service API for WeChat mes
 
 A WebSocket-based bridge that allows the cloud server to invoke tools on the user's local Mac:
 
+- **Browser tools** — Playwright controls a real Chromium browser for web tasks (Gmail, Calendar, flights, search)
+- `app.open` — launches installed macOS apps via `open -a`
 - `contacts.apple` — queries macOS Contacts via JXA (JavaScript for Automation)
 - `imessage.send` — sends iMessages via AppleScript
 - `reminders.manage` — manages Apple Reminders via JXA

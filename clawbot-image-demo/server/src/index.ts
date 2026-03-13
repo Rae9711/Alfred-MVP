@@ -554,7 +554,7 @@ const sessionWebSockets = new Map<string, any>();
 
 // wechat.send now calls WeChatPadPro directly — no connector needed
 // browser.* tools use Playwright on the connector
-const CONNECTOR_TOOLS = new Set(["contacts.apple", "imessage.send", "browser.search_flights", "browser.open_page", "browser.search_web", "browser.extract_page", "browser.click_link_by_text", "browser.fill_input", "browser.compose_gmail_draft", "browser.submit_chatgpt_prompt"]);
+const CONNECTOR_TOOLS = new Set(["contacts.apple", "imessage.send", "app.open", "browser.search_flights", "browser.open_page", "browser.search_web", "browser.read_gmail", "browser.extract_page", "browser.click_link_by_text", "browser.fill_input", "browser.compose_gmail_draft", "browser.manage_calendar", "browser.submit_chatgpt_prompt"]);
 const CONNECTOR_TOKEN = process.env.CONNECTOR_TOKEN?.trim();
 const REQUIRE_CONNECTOR_FOR_APPLE = process.env.REQUIRE_CONNECTOR_FOR_APPLE !== "false";
 
@@ -588,6 +588,7 @@ wss.on("connection", async (ws, req) => {
     } catch {
       sendJSON(ws, { type: "error", error: "Bad JSON" });
       return;
+          console.log(`[ws] New websocket connection from ${req.socket.remoteAddress}`);
     }
 
     const msgId = msg.id;
@@ -612,15 +613,19 @@ wss.on("connection", async (ws, req) => {
         return;
       }
 
+
       if (msg.method === "session.bindConnector") {
         const sessionId = msg.params.sessionId;
         const connectorId = (msg.params.connectorId ?? "").trim();
+        console.log(`[bindConnector] sessionId=${sessionId} binding to connectorId=${connectorId}`);
         if (!connectorId) throw new Error("connectorId is required");
 
         bindConnector(sessionId, connectorId);
         // Track this web-client socket so we can push status events later
         sessionWebSockets.set(sessionId, ws);
         const connected = hasConnector(connectorId);
+        console.log(`[bindConnector] sessionId=${sessionId} bound to connectorId=${connectorId} (connected=${connected})`);
+        console.log(`[bindConnector] currently registered connectors: ${getConnectedConnectorIds().join(", ")}`);
         sendJSON(ws, {
           id: msg.id,
           ok: true,
@@ -635,6 +640,7 @@ wss.on("connection", async (ws, req) => {
 
       if (msg.method === "connector.register") {
         const connectorId = (msg.params.connectorId ?? "").trim();
+          console.log(`[connector] before register — connected connectors: ${getConnectedConnectorIds().join(", ")}`);
         if (!connectorId) throw new Error("connectorId is required");
 
         if (CONNECTOR_TOKEN && msg.params.token !== CONNECTOR_TOKEN) {
@@ -644,7 +650,7 @@ wss.on("connection", async (ws, req) => {
         }
 
         registerConnector(connectorId, ws as any);
-        console.log(`[connector] register accepted: ${connectorId}`);
+        console.log(`[connector] register accepted: ${connectorId}. connected now: ${getConnectedConnectorIds().join(", ")}`);
         sendJSON(ws, {
           id: msg.id,
           ok: true,
@@ -658,6 +664,7 @@ wss.on("connection", async (ws, req) => {
         for (const [sessionId, clientWs] of sessionWebSockets.entries()) {
           if (getConnectorId(sessionId) === connectorId) {
             try {
+              console.log(`[connector.register] notifying bound web session: sessionId=${sessionId} connectorId=${connectorId}`);
               sendJSON(clientWs, {
                 type: "event",
                 event: "connector.status",
@@ -703,7 +710,9 @@ wss.on("connection", async (ws, req) => {
         const clarifyStep = plan.steps.find((s: any) => s.tool === "clarify");
         if (clarifyStep) {
           const question = clarifyStep.args?.question ?? "请提供更多细节";
-          setClarificationContext(msg.params.sessionId, { originalPrompt: prompt });
+          // Store which variable the clarification should be saved as (e.g. origin/recipient)
+          const saveAs = clarifyStep.args?.saveAs ?? clarifyStep.id;
+          setClarificationContext(msg.params.sessionId, { originalPrompt: prompt, saveAs, clarifyStepId: clarifyStep.id });
           sendJSON(ws, {
             type: "event",
             event: "agent.clarify",
@@ -968,9 +977,22 @@ wss.on("connection", async (ws, req) => {
           { timeoutMs: 600_000, label: "createPlan (clarified)" },
         );
 
+        // Prefill plan-level initialVars so executor can seed vars (e.g. origin/recipient)
+        const saveKey = (ctx.saveAs ?? ctx.clarifyStepId ?? "clarify");
+        plan.initialVars = plan.initialVars ?? {};
+        plan.initialVars[saveKey] = msg.params.answer;
+
+        // Persist the modified plan and send to client
+        try {
+          const { savePlan } = await import("./planStore.js");
+          savePlan(plan.planId, plan);
+        } catch (e) {
+          console.warn("[agent.clarify.response] failed to save plan with initialVars:", e?.message ?? e);
+        }
+
         sendJSON(ws, { type: "event", event: "agent.plan.proposed", data: plan });
         sendJSON(ws, { id: msg.id, ok: true, result: { planId: plan.planId } });
-        console.log("[agent.clarify.response] re-planned", msg.params.sessionId);
+        console.log("[agent.clarify.response] re-planned", msg.params.sessionId, "saved", saveKey);
         return;
       }
 

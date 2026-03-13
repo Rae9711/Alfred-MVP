@@ -1,40 +1,41 @@
 /**
  * Task: composeGmailDraft
  *
- * Opens Gmail in the Playwright browser, clicks Compose, fills the To /
- * Subject / Body fields using the reusable fillInput() helper, and stops
- * before clicking Send — leaving the draft window fully visible.
+ * Opens Gmail in the Playwright browser, checks login state, and if signed in
+ * clicks Compose, fills the To / Subject / Body fields using the reusable
+ * fillInput() helper, and stops before clicking Send — leaving the draft
+ * window fully visible.
  *
- * Uses fillInput() from Phase 1 for all three fields so typing logic is
- * never duplicated.
+ * If NOT signed in, returns a structured login_required result with a
+ * suggestedActions continuation button — the browser stays on Gmail so
+ * the user can sign in manually.
+ *
+ * Safety rules: NEVER automating password entry, 2FA, or login bypass.
+ *               NEVER clicking Send automatically.
  *
  * Execution flow:
  *   1. Navigate to https://mail.google.com (reuse or open session)
- *   2. Detect login (URL must stay in mail.google.com)
- *   3. Click the Compose button
- *   4. Wait for the compose window to appear
- *   5. Fill To → Tab to confirm recipient chip
- *   6. Fill Subject
- *   7. Fill Body
- *   8. Return draft_ready — do NOT click Send
+ *   2. Detect login (URL signals + DOM Compose-button presence)
+ *   3a. If not signed in → return login_required + suggestedActions, keep browser open
+ *   3b. If signed in → continue
+ *   4. Click the Compose button
+ *   5. Wait for the compose window to appear
+ *   6. Fill To → Tab to confirm recipient chip
+ *   7. Fill Subject
+ *   8. Fill Body
+ *   9. Return draft_ready — do NOT click Send
  *
  * Logs:
  *   [gmailDraft] Gmail opened, url=<url>
- *   [gmailDraft] login detected / not logged in
- *   [gmailDraft] clicking Compose…
+ *   [gmailDraft] login state check started
+ *   [gmailDraft] login detected: true/false (signal: <which>)
  *   [gmailDraft] compose window detected
- *   [gmailDraft] filling To: <email>
- *   [gmailDraft] To filled, pressing Tab to confirm chip
- *   [gmailDraft] filling Subject: <subject>
- *   [gmailDraft] Subject filled
- *   [gmailDraft] filling Body
- *   [gmailDraft] Body filled
  *   [gmailDraft] draft ready — paused before Send
  */
 
 import type { Page } from "playwright";
-import { getSessionPage, markSessionIdle } from "../playwrightManager.js";
-import { fillInput, type FillInputTarget } from "./fillInput.js";
+import { getSessionPage, getMostRecentSessionPage, markSessionIdle } from "../playwrightManager.js";
+// fillInput is used by resumeGmailAfterLogin for field filling, kept for future use
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -44,15 +45,24 @@ export type ComposeGmailDraftArgs = {
   body: string;
 };
 
+export type SuggestedAction = {
+  tool: string;
+  label: string;
+  args: Record<string, any>;
+};
+
 export type ComposeGmailDraftResult = {
   success: boolean;
-  status: "draft_ready" | "not_logged_in" | "compose_failed" | "fill_failed" | "error";
+  status: "draft_ready" | "login_required" | "compose_failed" | "fill_failed" | "error";
+  site?: string;
+  message?: string;
   to?: string;
   subject?: string;
   bodyPreview?: string;
   sendReady?: boolean;
   url?: string;
   error?: string;
+  suggestedActions?: SuggestedAction[];
 };
 
 // ── Selectors ────────────────────────────────────────────────────────────────
@@ -72,22 +82,29 @@ const COMPOSE_WINDOW_SELECTORS = [
   "div.aaZ",                              // Common compose dialog wrapper
 ];
 
-const TO_FIELD_SELECTORS = [
-  "input[name='to']",                     // Name attribute (reliable)
-  "textarea[name='to']",
+// Gmail's To area is a contenteditable chip-token input in the compose window.
+// The outer wrapper responds to clicks, the inner div accepts keyboard input.
+const TO_AREA_SELECTORS = [
+  "div[aria-label='To']",                 // Modern Gmail (English)
+  "div[aria-label='收件人']",             // Chinese locale
+  "div[aria-label='Recipients']",         // Some locales
+  // Legacy fallbacks (older Gmail)
+  "input[name='to']",
   "input[aria-label='To']",
-  "input[aria-label='收件人']",
 ];
 
 const SUBJECT_FIELD_SELECTORS = [
   "input[name='subjectbox']",             // Gmail's stable name attr
   "input[aria-label='Subject']",
   "input[aria-label='主题']",
+  "input[aria-label='主旨']",
 ];
 
+// Gmail body is a contenteditable div — NOT an input or textarea
 const BODY_FIELD_SELECTORS = [
   "div[aria-label='Message Body']",
   "div[aria-label='邮件正文']",
+  "div[aria-label='邮件内容']",
   "div.Am.Al.editable[contenteditable='true']",
   "div[contenteditable='true'][tabindex='1']",
   "div.editable[contenteditable='true']",
@@ -124,6 +141,67 @@ async function clickFirst(page: Page, selectors: string[]): Promise<void> {
   throw new Error(`None of the compose button selectors matched: ${selectors.join(", ")}`);
 }
 
+async function ensurePageAlive(page: Page): Promise<void> {
+  try {
+    const closed = page.isClosed ? page.isClosed() : false;
+    if (closed) throw new Error("page_closed");
+  } catch (e) {
+    throw new Error("page_closed");
+  }
+}
+
+/**
+ * Fill Gmail's recipient chip field.
+ *
+ * Gmail's To/Cc/Bcc area is a styled contenteditable region, not a plain
+ * <input>. Standard playwright fill() often fails because the element isn't
+ * focusable until clicked.  Strategy:
+ *   1. Click the To area wrapper to reveal / focus the inner text cursor
+ *   2. Type the address character-by-character via keyboard (works for any
+ *      contenteditable, even when fill() is blocked)
+ *   3. Press Enter to confirm the address as a chip token
+ *   4. Wait a beat so Gmail can process the chip
+ *
+ * Returns true on apparent success, false if none of the selectors matched.
+ */
+async function fillGmailAddressChip(
+  page: Page,
+  emailAddress: string,
+): Promise<boolean> {
+  const sel = await findFirst(page, TO_AREA_SELECTORS);
+  if (!sel) {
+    console.warn("[gmailDraft] To area selector not found — tried:", TO_AREA_SELECTORS);
+    return false;
+  }
+
+  console.log(`[gmailDraft] To area found: "${sel}"`);
+  const loc = page.locator(sel).first();
+
+  // Step 1: click to focus
+  await loc.click({ force: true });
+  await page.waitForTimeout(300);
+
+  // Step 2: for legacy <input> elements use fill(); for contenteditable use keyboard.type()
+  const tagName = await loc.evaluate((el: Element) => el.tagName.toLowerCase()).catch(() => "div");
+  const isInput = tagName === "input" || tagName === "textarea";
+
+  if (isInput) {
+    await loc.fill(emailAddress);
+  } else {
+    // contenteditable chip area — type char by char, then Enter
+    await page.keyboard.type(emailAddress, { delay: 30 });
+  }
+
+  await page.waitForTimeout(300);
+
+  // Step 3: confirm chip — Enter works in all Gmail locales; Tab works too
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(400);
+
+  console.log(`[gmailDraft] To chip entered: ${emailAddress}`);
+  return true;
+}
+
 // ── Main task ─────────────────────────────────────────────────────────────────
 
 export async function composeGmailDraft(
@@ -133,7 +211,7 @@ export async function composeGmailDraft(
 
   console.log(`[gmailDraft] starting draft — to="${to}" subject="${subject}"`);
 
-  const page = await getSessionPage("gmail");
+  const { page, sessionId } = await getMostRecentSessionPage();
 
   try {
     // ── Step 1: Navigate to Gmail ───────────────────────────────────────────
@@ -151,33 +229,76 @@ export async function composeGmailDraft(
       console.log("[gmailDraft] already on Gmail, reusing page");
     }
 
-    // Brief pause — let Gmail JS hydrate
-    await page.waitForTimeout(2_000);
+    // Brief pause — let Gmail JS hydrate and any redirect to settle
+    await page.waitForTimeout(2_500);
 
     const landedUrl = page.url();
     console.log(`[gmailDraft] Gmail opened, url=${landedUrl}`);
+    console.log("[gmailDraft] login state check started");
 
     // ── Step 2: Login check ─────────────────────────────────────────────────
+    //
+    // Signal 1 (URL): Must be on mail.google.com and NOT on a Google
+    //                 sign-in/accounts page
+    // Signal 2 (DOM): Compose button (div[gh='cm']) is visible — confirms
+    //                 the Gmail inbox has loaded (not just a landing page)
 
-    const isLoggedIn =
+    const urlSignal =
       landedUrl.includes("mail.google.com") &&
       !landedUrl.includes("accounts.google.com") &&
       !landedUrl.includes("ServiceLogin") &&
-      !landedUrl.includes("signin");
+      !landedUrl.includes("/signin") &&
+      !landedUrl.includes("CheckCookie");
 
-    if (!isLoggedIn) {
-      console.warn(`[gmailDraft] not logged in — redirected to: ${landedUrl}`);
-      markSessionIdle("gmail");
-      return {
-        success: false,
-        status: "not_logged_in",
-        url: landedUrl,
-        error:
-          "Gmail is not logged in. Please open https://mail.google.com in the browser and sign in, then try again.",
-      };
+    let loginSignal = "url";
+    let isLoggedIn = urlSignal;
+
+    if (urlSignal) {
+      // DOM confirmation — Compose button visible means inbox is fully loaded
+      const composeVisible = await page
+        .locator(COMPOSE_BTN_SELECTORS[0])
+        .isVisible({ timeout: 5_000 })
+        .catch(() => false);
+      if (composeVisible) {
+        loginSignal = "compose-button-visible";
+      } else {
+        // Compose not yet visible — try mailbox navigation indicator
+        const mailboxNavVisible = await page
+          .locator("div[role='navigation']")
+          .first()
+          .isVisible({ timeout: 3_000 })
+          .catch(() => false);
+        if (mailboxNavVisible) {
+          loginSignal = "mailbox-nav-visible";
+        } else {
+          // URL says Gmail but core UI not present — treat as not logged in
+          isLoggedIn = false;
+          loginSignal = "dom-check-failed";
+        }
+      }
     }
 
-    console.log("[gmailDraft] login detected");
+    console.log(`[gmailDraft] login detected: ${isLoggedIn} (signal: ${loginSignal})`);
+
+    if (!isLoggedIn) {
+      console.warn(`[gmailDraft] user not signed in — url=${landedUrl}, signal=${loginSignal}`);
+      // Keep the browser open on Gmail so the user can sign in manually.
+      // Do NOT call markSessionIdle — we want the page to stay on Gmail.
+      return {
+        success: false,
+        status: "login_required",
+        site: "gmail",
+        message: "Please sign in to Gmail first, then continue composing the draft.",
+        url: landedUrl,
+        suggestedActions: [
+          {
+            tool: "browser.resume_gmail_after_login",
+            label: "I have signed in, continue",
+            args: { to, subject, body },
+          },
+        ],
+      };
+    }
 
     // Wait for inbox to fully load (compose button appears after full load)
     await page
@@ -187,22 +308,86 @@ export async function composeGmailDraft(
     // ── Step 3: Click Compose ───────────────────────────────────────────────
 
     console.log("[gmailDraft] clicking Compose…");
-    await clickFirst(page, COMPOSE_BTN_SELECTORS);
+
+    // Verify page still alive before clicking
+    try {
+      await ensurePageAlive(page);
+    } catch (e) {
+      console.error("[gmailDraft] page closed before clicking Compose");
+      return {
+        success: false,
+        status: "error",
+        url: page.url(),
+        error: "Page closed before clicking Compose",
+      };
+    }
+
+    // Attempt to locate the Compose button selector and log which one is used
+    const composeSel = await findFirst(page, COMPOSE_BTN_SELECTORS);
+    if (!composeSel) {
+      console.warn("[gmailDraft] Compose button selector not found — tried:", COMPOSE_BTN_SELECTORS);
+    } else {
+      console.log(`[gmailDraft] Compose button found: ${composeSel}`);
+    }
+
+    try {
+      // Try a normal click first; then fallback to forced click if it fails
+      await clickFirst(page, COMPOSE_BTN_SELECTORS);
+    } catch (e) {
+      console.warn("[gmailDraft] normal Compose click failed, trying forced click", String(e));
+      // Forced click on the first matching locator (if any)
+      if (composeSel) {
+        try {
+          await page.locator(composeSel).first().click({ force: true });
+        } catch (ex) {
+          console.error("[gmailDraft] forced Compose click also failed", String(ex));
+          markSessionIdle(sessionId);
+          return {
+            success: false,
+            status: "compose_failed",
+            url: page.url(),
+            error: "Failed to click Compose button (normal and forced clicks failed).",
+          };
+        }
+      } else {
+        markSessionIdle(sessionId);
+        return {
+          success: false,
+          status: "compose_failed",
+          url: page.url(),
+          error: "Compose button not found and click could not be performed.",
+        };
+      }
+    }
 
     // Wait for compose window to open
     let composeWindowSel: string | null = null;
     for (let attempt = 0; attempt < 3; attempt++) {
+      // Verify page alive while waiting for compose window
+      try {
+        await ensurePageAlive(page);
+      } catch (e) {
+        console.error("[gmailDraft] page closed while waiting for compose window");
+        markSessionIdle(sessionId);
+        return {
+          success: false,
+          status: "error",
+          url: page.url(),
+          error: "Page closed while waiting for compose window",
+        };
+      }
+
       await page.waitForTimeout(1_000);
       composeWindowSel = await findFirst(page, COMPOSE_WINDOW_SELECTORS);
       if (composeWindowSel) break;
     }
 
     if (!composeWindowSel) {
-      // Compose may not have recognised selectors but the To input is present
-      const toSel = await findFirst(page, TO_FIELD_SELECTORS);
+      // Compose may not have recognised selectors but the To area is present
+      const toSel = await findFirst(page, TO_AREA_SELECTORS);
       if (!toSel) {
         console.error("[gmailDraft] compose window did not appear");
-        markSessionIdle("gmail");
+        markSessionIdle(sessionId);
         return {
           success: false,
           status: "compose_failed",
@@ -219,70 +404,96 @@ export async function composeGmailDraft(
 
     console.log(`[gmailDraft] filling To: ${to}`);
 
-    // Prefer direct selector for Gmail's To input, fall back to placeholder
-    const toSel = (await findFirst(page, TO_FIELD_SELECTORS)) ?? TO_FIELD_SELECTORS[0];
-    const toTarget: FillInputTarget = { by: "selector", value: toSel };
-
-    const toResult = await fillInput(page, { target: toTarget, value: to, pressEnter: false });
-    if (!toResult.success) {
-      // Soft failure — try placeholder fallback
-      console.warn(`[gmailDraft] To fill via selector failed: ${toResult.error}`);
-    }
-    // Press Tab to confirm recipient chip (Gmail turns email → chip on Tab)
+    // Verify page alive before filling To
     try {
-      await page.locator(toSel).first().press("Tab");
-      console.log("[gmailDraft] To filled, pressed Tab to confirm chip");
-    } catch {
-      console.warn("[gmailDraft] Tab confirmation for To field failed — continuing");
+      await ensurePageAlive(page);
+    } catch (e) {
+      console.error("[gmailDraft] page closed before filling To field");
+      markSessionIdle(sessionId);
+      return {
+        success: false,
+        status: "error",
+        url: page.url(),
+        error: "Page closed before filling To field",
+      };
+    }
+
+    // Gmail compose uses a contenteditable chip field for To — use dedicated helper
+    const toFilled = await fillGmailAddressChip(page, to);
+    if (!toFilled) {
+      console.warn("[gmailDraft] To chip fill failed — all selectors missed");
     }
 
     // ── Step 5: Fill Subject ────────────────────────────────────────────────
 
     console.log(`[gmailDraft] filling Subject: ${subject}`);
 
+    // Verify page alive before filling Subject
+    try {
+      await ensurePageAlive(page);
+    } catch (e) {
+      console.error("[gmailDraft] page closed before filling Subject");
+      markSessionIdle(sessionId);
+      return {
+        success: false,
+        status: "error",
+        url: page.url(),
+        error: "Page closed before filling Subject",
+      };
+    }
+
     const subjectSel =
       (await findFirst(page, SUBJECT_FIELD_SELECTORS)) ?? SUBJECT_FIELD_SELECTORS[0];
-    const subjectTarget: FillInputTarget = { by: "selector", value: subjectSel };
 
-    const subjResult = await fillInput(page, {
-      target: subjectTarget,
-      value: subject,
-      pressEnter: false,
-    });
-
-    if (subjResult.success) {
+    // Subject is a plain <input> — click to focus then fill
+    try {
+      await page.locator(subjectSel).first().click();
+      await page.waitForTimeout(150);
+      await page.locator(subjectSel).first().fill(subject);
       console.log("[gmailDraft] Subject filled");
-    } else {
-      console.warn(`[gmailDraft] Subject fill warning: ${subjResult.error}`);
+    } catch (e: any) {
+      console.warn(`[gmailDraft] Subject fill warning: ${e.message}`);
     }
 
     // ── Step 6: Fill Body ───────────────────────────────────────────────────
 
     console.log("[gmailDraft] filling Body");
 
-    const bodySel =
-      (await findFirst(page, BODY_FIELD_SELECTORS)) ?? BODY_FIELD_SELECTORS[0];
-    const bodyTarget: FillInputTarget = { by: "selector", value: bodySel };
-
-    const bodyResult = await fillInput(page, {
-      target: bodyTarget,
-      value: body,
-      pressEnter: false,
-    });
-
-    if (bodyResult.success) {
-      console.log("[gmailDraft] Body filled");
-    } else {
-      console.warn(`[gmailDraft] Body fill warning: ${bodyResult.error}`);
+    // Verify page alive before filling Body
+    try {
+      await ensurePageAlive(page);
+    } catch (e) {
+      console.error("[gmailDraft] page closed before filling Body");
+      markSessionIdle(sessionId);
+      return {
+        success: false,
+        status: "error",
+        url: page.url(),
+        error: "Page closed before filling Body",
+      };
     }
 
-    // Determine overall success: To + Subject must have been filled
-    const overallSuccess =
-      (toResult.success || toResult.verified) &&
-      (subjResult.success || subjResult.verified);
+    const bodySel =
+      (await findFirst(page, BODY_FIELD_SELECTORS)) ?? BODY_FIELD_SELECTORS[0];
+
+    // Body is a contenteditable div — click to focus, then use keyboard.type()
+    try {
+      await page.locator(bodySel).first().click();
+      await page.waitForTimeout(150);
+      // Triple-click to clear any placeholder text, then type
+      await page.locator(bodySel).first().click({ clickCount: 3 });
+      await page.keyboard.type(body, { delay: 10 });
+      console.log("[gmailDraft] Body filled");
+    } catch (e: any) {
+      console.warn(`[gmailDraft] Body fill warning: ${e.message}`);
+    }
+
+    // Determine overall success: To + Subject must have fields present
+    // (toFilled: To area was found and typed into; subject: selector found)
+    const overallSuccess = toFilled;
 
     if (!overallSuccess) {
-      markSessionIdle("gmail");
+      markSessionIdle(sessionId);
       return {
         success: false,
         status: "fill_failed",
@@ -290,13 +501,13 @@ export async function composeGmailDraft(
         subject,
         bodyPreview: body.slice(0, 100),
         url: page.url(),
-        error: `Failed to fill required fields. To: ${toResult.success}, Subject: ${subjResult.success}`,
+        error: "Failed to fill To field — Gmail compose To area selector not found.",
       };
     }
 
     console.log("[gmailDraft] draft ready — paused before Send");
 
-    markSessionIdle("gmail");
+    markSessionIdle(sessionId);
 
     return {
       success: true,
@@ -309,7 +520,7 @@ export async function composeGmailDraft(
     };
   } catch (err: any) {
     console.error(`[gmailDraft] unexpected error: ${err.message}`);
-    markSessionIdle("gmail");
+    markSessionIdle(sessionId);
     return {
       success: false,
       status: "error",

@@ -65,7 +65,8 @@ export type ToolPermission =
   | "calendar.write"
   | "reminders.write"
   | "files.read"
-  | "browser.control";
+  | "browser.control"
+  | "app.open";
 
 export type ToolCategory = "content" | "platform" | "data" | "file" | "productivity" | "communication" | "system";
 
@@ -164,6 +165,7 @@ const PERMISSION_LABELS: Record<ToolPermission, string> = {
   "reminders.write": "管理你的待办事项",
   "files.read": "读取已上传的文件",
   "browser.control": "控制浏览器（打开网页、搜索）",
+  "app.open": "在本机打开桌面应用",
 };
 
 export function getPermissionLabel(perm: ToolPermission): string {

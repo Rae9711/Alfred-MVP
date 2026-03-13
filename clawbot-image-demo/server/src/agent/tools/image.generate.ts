@@ -39,39 +39,37 @@ Description: ${description}
 Size: ${size}
 
 Output a detailed spec including:
-- Color palette (specific hex codes)
-- Layout description
-- Typography (font suggestions, sizes)
-- Key visual elements
-- Text content to include
 
 Be specific and actionable. A designer should be able to create this image from your spec.`,
       role: "tool",
     });
 
     // Save the spec to disk
-    const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    const filename = `image_spec_${ts}.txt`;
-    const filePath = path.join(ctx.outboxDir, filename);
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      const filename = `image_spec_${ts}.txt`;
+      const filePath = path.join(ctx.outboxDir, filename);
 
-    const content = [
-      `=== Image Design Specification ===`,
-      `Description: ${description}`,
-      `Size: ${size}`,
-      `Generated: ${new Date().toISOString()}`,
-      ``,
-      `--- Detailed Spec ---`,
-      spec,
-      ``,
-      `[NOTE: In production, this spec would be sent to an image generation API`,
-      `such as DALL-E, Stable Diffusion, or MidJourney to produce the actual image.]`,
-    ].join("\n");
+      // Ensure outbox directory exists
+      fs.mkdirSync(ctx.outboxDir, { recursive: true });
 
-    fs.writeFileSync(filePath, content, "utf-8");
+      const content = [
+        `=== Image Design Specification ===`,
+        `Description: ${description}`,
+        `Size: ${size}`,
+        `Generated: ${new Date().toISOString()}`,
+        ``,
+        `--- Detailed Spec ---`,
+        spec,
+        ``,
+        `[NOTE: In production, this spec would be sent to an image generation API`,
+        `such as DALL-E, Stable Diffusion, or MidJourney to produce the actual image.]`,
+      ].join("\n");
 
-    return {
-      filePath,
-      description: spec,
+      fs.writeFileSync(filePath, content, "utf-8");
+
+      return {
+        filePath,
+        description: spec,
     };
   },
 });

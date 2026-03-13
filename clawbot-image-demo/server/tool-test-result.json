@@ -1,0 +1,112 @@
+[
+  {
+    "tool": "text.generate",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "image.generate",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "file.save",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "clarify",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "contacts.apple",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "platform.send",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "sms.send",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "imessage.send",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "wechat.send",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "reminders.manage",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "app.open",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "browser.search_flights",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "browser.open_page",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "browser.search_web",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "browser.extract_page",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "browser.click_link_by_text",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "browser.fill_input",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "browser.compose_gmail_draft",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "browser.read_gmail",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "browser.manage_calendar",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "browser.resume_gmail_after_login",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  },
+  {
+    "tool": "browser.submit_chatgpt_prompt",
+    "ok": false,
+    "error": "Request failed with status code 404"
+  }
+]

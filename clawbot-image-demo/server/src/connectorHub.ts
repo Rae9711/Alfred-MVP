@@ -32,7 +32,7 @@ export function registerConnector(connectorId: string, socket: ConnectorSocket) 
 
   connectors.set(id, socket);
   socketToConnector.set(socket, id);
-  console.log(`[connector] registered: ${id}`);
+  console.log(`[connector] registered: ${id} (total=${connectors.size})`);
 }
 
 export function unregisterConnectorBySocket(socket: ConnectorSocket) {
@@ -74,6 +74,7 @@ export async function invokeConnectorTool(opts: {
 
   const socket = connectors.get(connectorId);
   if (!socket) {
+    console.warn(`[connectorHub] invokeConnectorTool: missing connector ${connectorId}. connected: ${Array.from(connectors.keys()).join(", ")}`);
     throw new Error(`Connector not connected: ${connectorId}`);
   }
 

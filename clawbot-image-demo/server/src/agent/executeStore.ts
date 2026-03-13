@@ -27,6 +27,8 @@ export type RunRecord = {
   planId: string;
   /** Original user prompt, verbatim */
   prompt: string;
+  /** Optional connector id used to execute connector tools */
+  connectorId?: string | null;
   /** Structured execution receipt – fed to Reporter as-is */
   executionSummary: ExecutionSummary;
   /** stepId → raw tool return value */
@@ -50,6 +52,7 @@ export function saveRun(r: RunRecord) {
         run_id: r.runId,
         plan_id: r.planId,
         user_id: (r as any).userId ?? null,
+        connector_id: (r as any).connectorId ?? null,
         prompt: r.prompt,
         execution_summary: r.executionSummary,
         tool_results: r.toolResults,

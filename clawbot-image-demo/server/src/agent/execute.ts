@@ -77,6 +77,8 @@ import {
 } from "./executeStore.js";
 import { getTool, type ToolContext } from "./tools/registry.js";
 import type { Plan, PlanStep } from "./plan.js";
+import { getConnectorId } from "../sessionStore.js";
+import { invokeConnectorTool, hasConnector } from "../connectorHub.js";
 
 type StepExecuteHookInput = {
   sessionId: string;
@@ -267,11 +269,15 @@ export async function executePlan(opts: {
   if (!opts.approved) throw new Error("Execution requires approval.");
 
   const runId = nanoid();
-  opts.emit("agent.exec.started", { runId, planId: plan.planId });
+  const boundConnector = getConnectorId(opts.sessionId) ?? null;
+  console.log(`[executePlan] starting run runId=${runId} planId=${plan.planId} sessionId=${opts.sessionId} boundConnector=${boundConnector}`);
+  opts.emit("agent.exec.started", { runId, planId: plan.planId, connectorId: boundConnector });
 
   const stepResults: StepResult[] = [];
   const toolResults: Record<string, any> = {};
-  const vars: Record<string, any> = {};
+  // Prefill vars from plan.initialVars if present (e.g. answers from clarify)
+  const initialVars = (plan as any).initialVars ?? {};
+  const vars: Record<string, any> = { ...initialVars };
 
   for (let i = 0; i < plan.steps.length; i++) {
     const step: PlanStep = plan.steps[i];
@@ -317,16 +323,37 @@ export async function executePlan(opts: {
           label: step.tool,
         });
 
-      const result = opts.executeTool
-        ? await opts.executeTool({
-            sessionId: opts.sessionId,
-            step,
-            args: resolvedArgs,
-            timeoutMs: timeout,
-            ctx,
-            localExecute,
-          })
-        : await localExecute();
+          // Default execute hook: if caller did not provide an executeTool hook,
+          // route connector-capable tools (app.open, browser.* and tools that declare
+          // the 'app.open' or 'browser.control' permission) to the bound local connector
+          // when one is bound and connected. This makes test scripts that call
+          // executePlan() directly behave like the real server runtime.
+          const defaultExecute: StepExecuteHook = async ({ sessionId, step, args, timeoutMs, ctx, localExecute }) => {
+            const toolDef = tool;
+            const connId = getConnectorId(sessionId);
+
+            const requiresConnector =
+              toolDef.permissions?.includes("app.open") ||
+              toolDef.permissions?.includes("browser.control") ||
+              String(step.tool).startsWith("browser.");
+
+            if (!requiresConnector) {
+              return await localExecute();
+            }
+
+            if (!connId) return await localExecute();
+            if (!hasConnector(connId)) return await localExecute();
+
+            try {
+              const connectorResult = await invokeConnectorTool({ connectorId: connId, tool: step.tool, args, timeoutMs: timeoutMs + 15_000 });
+              return connectorResult;
+            } catch (e: any) {
+              return { error: `Connector execution failed: ${e?.message || String(e)}` };
+            }
+          };
+
+          const hook = opts.executeTool ?? defaultExecute;
+          const result = await hook({ sessionId: opts.sessionId, step, args: resolvedArgs, timeoutMs: timeout, ctx, localExecute });
 
       /**
        * 错误检测逻辑
@@ -458,6 +485,7 @@ export async function executePlan(opts: {
     planId: plan.planId,
     prompt: plan.prompt,
     executionSummary,
+    connectorId: boundConnector,
     toolResults,
   };
 
